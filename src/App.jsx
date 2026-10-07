@@ -1,11 +1,17 @@
-  import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Instagram, Search, Sparkles, Copy, Check, Download, 
-  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, Film, Layers, History, Volume2
+  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, Film, Layers, History, Volume2, Play
 } from 'lucide-react';
 
 const API_KEY = '30468bbd66msh09095694867a49bp1bfa9djsn432e9272dd57';
 const API_HOST = 'instagram-public-bulk-scraper.p.rapidapi.com';
+
+// CDN 403 Forbidden hotlink bypass helper
+const safeMedia = (url) => {
+  if (!url) return '';
+  return `https://wsrv.nl/?url=${encodeURIComponent(url)}&default=404`;
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('viewer');
@@ -132,14 +138,14 @@ export default function App() {
     setTimeout(() => setCopiedBioIndex(null), 2000);
   };
 
-  // ==================== 3. VIEWER & RAPIDAPI LOGIC ====================
+  // ==================== 3. VIEWER & ROBUST RAPIDAPI PARSING ====================
   const [searchUsername, setSearchUsername] = useState('');
   const [searchedUser, setSearchedUser] = useState(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [viewerTab, setViewerTab] = useState('posts');
 
-  // Audio Extractor State
+  // Audio Extractor States
   const [audioUrlInput, setAudioUrlInput] = useState('');
   const [audioLoading, setAudioLoading] = useState(false);
   const [extractedAudio, setExtractedAudio] = useState(null);
@@ -160,17 +166,17 @@ export default function App() {
     setSearchedUser(null);
 
     try {
-      // 1. Fetch User Info Web (profile info + timeline posts)
+      // 1. Fetch User Info Web
       const userRes = await fetch(
         `https://${API_HOST}/v1/user_info_web?username=${cleanUser}`,
         { method: 'GET', headers }
       );
 
-      if (!userRes.ok) throw new Error('Account nahi mila ya API issue hai.');
+      if (!userRes.ok) throw new Error('Account fetch fail ho gaya ya private hai.');
       const userRaw = await userRes.json();
       const userDataObj = userRaw?.data?.user || userRaw?.user || userRaw?.data;
 
-      if (!userDataObj) throw new Error('Profile details fetch nahi ho saki.');
+      if (!userDataObj) throw new Error('User details nahi mili.');
 
       const userId = userDataObj.id || userDataObj.pk;
 
@@ -195,16 +201,23 @@ export default function App() {
         );
         if (reelsRes.ok) {
           const reelsRaw = await reelsRes.json();
-          const items = reelsRaw?.data?.items || reelsRaw?.items || [];
-          parsedReels = items.map((r, i) => ({
-            id: r.id || `reel_${i}`,
-            thumbnail: r.image_versions2?.candidates?.[0]?.url || r.display_url || '',
-            videoUrl: r.video_versions?.[0]?.url || '',
-            views: (r.play_count || r.view_count || 'View').toLocaleString(),
-          }));
+          // API formats: data.items, items, ya direct data array
+          const rawItems = reelsRaw?.data?.items || reelsRaw?.items || (Array.isArray(reelsRaw?.data) ? reelsRaw?.data : []);
+          
+          parsedReels = rawItems.map((r, i) => {
+            const media = r.media || r;
+            const thumb = media.image_versions2?.candidates?.[0]?.url || media.thumbnail_url || media.display_url || '';
+            const vid = media.video_versions?.[0]?.url || media.video_url || '';
+            return {
+              id: media.id || media.pk || `reel_${i}`,
+              thumbnail: thumb,
+              videoUrl: vid,
+              views: (media.play_count || media.view_count || 'View').toLocaleString(),
+            };
+          });
         }
       } catch (err) {
-        console.warn('Reels fetch skipped:', err);
+        console.warn('Reels fetch issue:', err);
       }
 
       // 3. Fetch Active Stories (v1/download_story)
@@ -216,17 +229,19 @@ export default function App() {
         );
         if (storyRes.ok) {
           const storyRaw = await storyRes.json();
-          const storyItems = storyRaw?.data || storyRaw?.items || [];
+          const storyItems = storyRaw?.data || storyRaw?.items || (Array.isArray(storyRaw) ? storyRaw : []);
+          
           if (Array.isArray(storyItems)) {
             parsedStories = storyItems.map((s, i) => ({
-              id: s.id || `story_${i}`,
-              mediaUrl: s.video_url || s.image_url || s.url || '',
-              type: s.video_url ? 'video' : 'image',
+              id: s.id || s.pk || `story_${i}`,
+              mediaUrl: s.video_url || s.image_url || s.url || (s.video_versions?.[0]?.url) || (s.image_versions2?.candidates?.[0]?.url) || '',
+              thumbnail: s.image_url || (s.image_versions2?.candidates?.[0]?.url) || s.url || '',
+              isVideo: Boolean(s.video_url || s.video_versions?.[0]?.url || s.is_video),
             }));
           }
         }
       } catch (err) {
-        console.warn('Story fetch skipped:', err);
+        console.warn('Story fetch issue:', err);
       }
 
       setSearchedUser({
@@ -251,7 +266,7 @@ export default function App() {
     }
   };
 
-  // 4. Handle Reel Audio Extraction (v1/extract_audio)
+  // 4. Handle Reel Audio Extraction
   const handleExtractAudio = async (e) => {
     e.preventDefault();
     if (!audioUrlInput.trim()) return;
@@ -373,7 +388,7 @@ export default function App() {
                     <div className="relative">
                       <div className="w-24 h-24 rounded-full border-4 border-rose-500 p-0.5 overflow-hidden">
                         <img
-                          src={searchedUser.avatarUrl}
+                          src={safeMedia(searchedUser.avatarUrl)}
                           alt={searchedUser.username}
                           referrerPolicy="no-referrer"
                           className="w-full h-full rounded-full object-cover"
@@ -452,7 +467,12 @@ export default function App() {
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                         {searchedUser.postsList.map((post) => (
                           <div key={post.id} className="group relative aspect-square rounded-xl overflow-hidden bg-slate-900 border border-slate-800">
-                            <img src={post.url} alt="Post" referrerPolicy="no-referrer" className="w-full h-full object-cover transition duration-300 group-hover:scale-105" />
+                            <img 
+                              src={safeMedia(post.url)} 
+                              alt="Post" 
+                              referrerPolicy="no-referrer" 
+                              className="w-full h-full object-cover transition duration-300 group-hover:scale-105" 
+                            />
                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex flex-col justify-between p-3 text-white">
                               <div className="flex justify-between text-xs font-medium">
                                 <span>❤️ {post.likes}</span>
@@ -473,22 +493,30 @@ export default function App() {
                 {viewerTab === 'reels' && (
                   <div>
                     {searchedUser.reelsList.length === 0 ? (
-                      <p className="text-center text-xs text-slate-500 py-8">Reels data available nahi hai.</p>
+                      <p className="text-center text-xs text-slate-500 py-8">Koi reels nahi mili ya account reels private hain.</p>
                     ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                         {searchedUser.reelsList.map((reel) => (
                           <div key={reel.id} className="group relative aspect-[9/16] rounded-xl overflow-hidden bg-slate-900 border border-slate-800">
-                            <img src={reel.thumbnail} alt="Reel" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
-                            <span className="absolute bottom-2 left-2 text-[10px] bg-black/60 px-1.5 py-0.5 rounded font-bold text-white">
-                              ▶ {reel.views}
-                            </span>
-                            {reel.videoUrl && (
-                              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex flex-col justify-end p-3 text-white">
-                                <a href={reel.videoUrl} target="_blank" rel="noreferrer" className="bg-rose-600 hover:bg-rose-750 text-[11px] py-1.5 font-bold rounded-lg text-center flex items-center justify-center gap-1.5">
-                                  <Download size={13} /> Save Reel
-                                </a>
-                              </div>
+                            {reel.videoUrl ? (
+                              <video 
+                                src={reel.videoUrl} 
+                                poster={safeMedia(reel.thumbnail)} 
+                                controls 
+                                playsInline 
+                                className="w-full h-full object-cover" 
+                              />
+                            ) : (
+                              <img 
+                                src={safeMedia(reel.thumbnail)} 
+                                alt="Reel" 
+                                referrerPolicy="no-referrer" 
+                                className="w-full h-full object-cover" 
+                              />
                             )}
+                            <span className="absolute top-2 left-2 text-[10px] bg-black/70 px-2 py-0.5 rounded font-bold text-white flex items-center gap-1">
+                              <Play size={10} fill="currentColor" /> {reel.views}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -500,17 +528,17 @@ export default function App() {
                 {viewerTab === 'stories' && (
                   <div>
                     {searchedUser.storiesList.length === 0 ? (
-                      <p className="text-center text-xs text-slate-500 py-8">Filhal koi active stories nahi hain.</p>
+                      <p className="text-center text-xs text-slate-500 py-8">Abhi koi 24h active story live nahi hai.</p>
                     ) : (
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                         {searchedUser.storiesList.map((story) => (
                           <div key={story.id} className="relative aspect-[9/16] rounded-xl overflow-hidden border border-slate-800 bg-slate-900 group">
-                            {story.type === 'video' ? (
-                              <video src={story.mediaUrl} className="w-full h-full object-cover" controls />
+                            {story.isVideo ? (
+                              <video src={story.mediaUrl} controls playsInline className="w-full h-full object-cover" />
                             ) : (
-                              <img src={story.mediaUrl} alt="Story" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                              <img src={safeMedia(story.mediaUrl)} alt="Story" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                             )}
-                            <a href={story.mediaUrl} target="_blank" rel="noreferrer" className="absolute bottom-2 right-2 bg-rose-600 hover:bg-rose-700 text-[11px] px-2 py-1 font-bold rounded-lg text-white flex items-center gap-1">
+                            <a href={story.mediaUrl} target="_blank" rel="noreferrer" className="absolute bottom-2 right-2 bg-rose-600 hover:bg-rose-700 text-[11px] px-2 py-1 font-bold rounded-lg text-white flex items-center gap-1 shadow">
                               <Download size={12} /> Save
                             </a>
                           </div>
