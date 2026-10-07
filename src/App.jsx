@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Instagram, Search, Sparkles, Copy, Check, Download, 
-  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight
+  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, 
+  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle, Link as LinkIcon
 } from 'lucide-react';
 
 const API_KEY = '30468bbd66msh09095694867a49bp1bfa9djsn432e9272dd57';
@@ -10,6 +11,11 @@ const API_HOST = 'instagram-public-bulk-scraper.p.rapidapi.com';
 const safeMedia = (url) => {
   if (!url) return '';
   return `https://wsrv.nl/?url=${encodeURIComponent(url)}&default=404`;
+};
+
+const headers = {
+  'x-rapidapi-host': API_HOST,
+  'x-rapidapi-key': API_KEY,
 };
 
 export default function App() {
@@ -137,28 +143,35 @@ export default function App() {
     setTimeout(() => setCopiedBioIndex(null), 2000);
   };
 
-  // ==================== 3. VIEWER STATES ====================
+  // ==================== 3. ANONYMOUS VIEWER & MODALS ====================
   const [searchUsername, setSearchUsername] = useState('');
   const [searchedUser, setSearchedUser] = useState(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [viewerTab, setViewerTab] = useState('posts');
 
-  // Carousel Modal State (Multiple Photos)
+  // Carousel Slides Modal
   const [activeCarousel, setActiveCarousel] = useState(null);
   const [carouselIndex, setCarouselIndex] = useState(0);
 
-  // Audio Extractor States
+  // Highlight Media Stories Modal
+  const [highlightModal, setHighlightModal] = useState({ open: false, title: '', items: [], loading: false });
+
+  // Post Comments Modal
+  const [commentsModal, setCommentsModal] = useState({ open: false, code: '', comments: [], loading: false });
+
+  // ==================== 4. DOWNLODER & AUDIO TOOLS ====================
+  const [mediaUrlInput, setMediaUrlInput] = useState('');
+  const [mediaLoading, setMediaLoading] = useState(false);
+  const [mediaResult, setMediaResult] = useState(null);
+  const [mediaError, setMediaError] = useState('');
+
   const [audioUrlInput, setAudioUrlInput] = useState('');
   const [audioLoading, setAudioLoading] = useState(false);
   const [extractedAudio, setExtractedAudio] = useState(null);
   const [audioError, setAudioError] = useState('');
 
-  const headers = {
-    'x-rapidapi-host': API_HOST,
-    'x-rapidapi-key': API_KEY,
-  };
-
+  // ---------------- Viewer Handler ----------------
   const handleSearch = async (e) => {
     e.preventDefault();
     const cleanUser = searchUsername.trim().replace('@', '');
@@ -169,26 +182,24 @@ export default function App() {
     setSearchedUser(null);
 
     try {
-      // 1. User Info Web (for multi-image posts carousel extract)
+      // 1. Fetch User Info Web (v1/user_info_web)
       const userRes = await fetch(
         `https://${API_HOST}/v1/user_info_web?username=${cleanUser}`,
         { method: 'GET', headers }
       );
 
-      if (!userRes.ok) throw new Error('Account nahi mila ya request limit cross ho gayi.');
+      if (!userRes.ok) throw new Error('Account nahi mila ya API issue hai.');
       const userRaw = await userRes.json();
       const userDataObj = userRaw?.data?.user || userRaw?.user || userRaw?.data;
 
-      if (!userDataObj) throw new Error('User details fetch nahi ho saki.');
+      if (!userDataObj) throw new Error('User details load nahi ho payi.');
 
       const userId = userDataObj.id || userDataObj.pk;
 
-      // Extract Timeline Posts with Sidecar Children (Multiple Images)
+      // Extract Multi-image Posts
       const timelineEdges = userDataObj.edge_owner_to_timeline_media?.edges || [];
       const parsedPosts = timelineEdges.map((edge, i) => {
         const node = edge.node || edge;
-        
-        // Multi-image post extraction
         const sidecarChildren = node.edge_sidecar_to_children?.edges || [];
         let allImages = [];
         if (sidecarChildren.length > 0) {
@@ -199,6 +210,7 @@ export default function App() {
 
         return {
           id: node.id || `post_${i}`,
+          shortcode: node.shortcode || '',
           url: node.display_url || node.thumbnail_src || '',
           allImages: allImages,
           isCarousel: allImages.length > 1,
@@ -207,7 +219,7 @@ export default function App() {
         };
       });
 
-      // 2. Fetch Reels
+      // 2. Fetch Reels (v1/user_reels)
       let parsedReels = [];
       try {
         const reelsRes = await fetch(
@@ -217,15 +229,13 @@ export default function App() {
         if (reelsRes.ok) {
           const reelsRaw = await reelsRes.json();
           const rawItems = reelsRaw?.data?.items || reelsRaw?.items || (Array.isArray(reelsRaw?.data) ? reelsRaw?.data : []);
-          
           parsedReels = rawItems.map((r, i) => {
             const media = r.media || r;
-            const thumb = media.image_versions2?.candidates?.[0]?.url || media.thumbnail_url || media.display_url || '';
-            const vid = media.video_versions?.[0]?.url || media.video_url || '';
             return {
               id: media.id || media.pk || `reel_${i}`,
-              thumbnail: thumb,
-              videoUrl: vid,
+              shortcode: media.code || '',
+              thumbnail: media.image_versions2?.candidates?.[0]?.url || media.thumbnail_url || media.display_url || '',
+              videoUrl: media.video_versions?.[0]?.url || media.video_url || '',
               views: (media.play_count || media.view_count || 'View').toLocaleString(),
             };
           });
@@ -234,7 +244,7 @@ export default function App() {
         console.warn('Reels fetch skipped:', err);
       }
 
-      // 3. Fetch Active Stories (Both Direct Story & Backup Parser)
+      // 3. Fetch Active Stories (v1/download_story)
       let parsedStories = [];
       try {
         const storyRes = await fetch(
@@ -243,24 +253,44 @@ export default function App() {
         );
         if (storyRes.ok) {
           const storyRaw = await storyRes.json();
-          const storyItems = storyRaw?.data || storyRaw?.items || storyRaw?.stories || (Array.isArray(storyRaw) ? storyRaw : []);
-          
+          const storyItems = storyRaw?.data || storyRaw?.items || (Array.isArray(storyRaw) ? storyRaw : []);
           if (Array.isArray(storyItems)) {
             parsedStories = storyItems.map((s, i) => {
               const item = s.media || s;
               const vUrl = item.video_url || item.video_versions?.[0]?.url || '';
-              const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.url || item.display_url || '';
+              const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.url || '';
               return {
-                id: item.id || item.pk || `story_${i}`,
+                id: item.id || `story_${i}`,
                 mediaUrl: vUrl || iUrl,
-                thumbnail: iUrl || vUrl,
                 isVideo: Boolean(vUrl || item.is_video),
               };
             });
           }
         }
       } catch (err) {
-        console.warn('Story fetch issue:', err);
+        console.warn('Stories fetch skipped:', err);
+      }
+
+      // 4. Fetch User Highlights Tray (v1/user_highlights)
+      let parsedHighlights = [];
+      try {
+        const hlRes = await fetch(
+          `https://${API_HOST}/v1/user_highlights?username_or_id=${userId || cleanUser}`,
+          { method: 'GET', headers }
+        );
+        if (hlRes.ok) {
+          const hlRaw = await hlRes.json();
+          const hlItems = hlRaw?.data?.tray || hlRaw?.data || hlRaw?.tray || [];
+          if (Array.isArray(hlItems)) {
+            parsedHighlights = hlItems.map((hl) => ({
+              id: hl.id,
+              title: hl.title || 'Highlight',
+              coverUrl: hl.cover_media?.cropped_image_version?.url || hl.cover_media?.image_versions2?.candidates?.[0]?.url || '',
+            }));
+          }
+        }
+      } catch (err) {
+        console.warn('Highlights fetch skipped:', err);
       }
 
       setSearchedUser({
@@ -275,17 +305,91 @@ export default function App() {
         postsList: parsedPosts,
         reelsList: parsedReels,
         storiesList: parsedStories,
+        highlightsList: parsedHighlights,
       });
 
     } catch (err) {
       console.error(err);
-      setErrorMessage(err.message || 'Data fetch fail ho gaya.');
+      setErrorMessage(err.message || 'Fetch request fail ho gayi.');
     } finally {
       setViewerLoading(false);
     }
   };
 
-  // 4. Handle Reel Audio Extraction
+  // ---------------- Fetch Highlight Media (v1/highlight_media) ----------------
+  const openHighlightMedia = async (highlightId, title) => {
+    setHighlightModal({ open: true, title, items: [], loading: true });
+    try {
+      const res = await fetch(
+        `https://${API_HOST}/v1/highlight_media?highlight_id=${highlightId}`,
+        { method: 'GET', headers }
+      );
+      if (!res.ok) throw new Error('Highlight media fetch nahi ho saki.');
+      const data = await res.json();
+      const items = data?.data?.items || data?.items || [];
+      const parsedItems = items.map((m, i) => ({
+        id: m.id || `hl_m_${i}`,
+        url: m.video_versions?.[0]?.url || m.image_versions2?.candidates?.[0]?.url || '',
+        isVideo: Boolean(m.video_versions?.[0]?.url),
+      }));
+      setHighlightModal({ open: true, title, items: parsedItems, loading: false });
+    } catch (err) {
+      setHighlightModal({ open: true, title, items: [], loading: false });
+    }
+  };
+
+  // ---------------- Fetch Post Comments (v1/media_comments) ----------------
+  const openComments = async (codeOrId) => {
+    setCommentsModal({ open: true, code: codeOrId, comments: [], loading: true });
+    try {
+      const res = await fetch(
+        `https://${API_HOST}/v1/media_comments?code_or_id_or_url=${encodeURIComponent(codeOrId)}`,
+        { method: 'GET', headers }
+      );
+      if (!res.ok) throw new Error('Comments fetch nahi ho sake.');
+      const data = await res.json();
+      const commentsArray = data?.data?.comments || data?.comments || [];
+      setCommentsModal({ open: true, code: codeOrId, comments: commentsArray, loading: false });
+    } catch (err) {
+      setCommentsModal({ open: true, code: codeOrId, comments: [], loading: false });
+    }
+  };
+
+  // ---------------- Single Media Info (v2/media_info) ----------------
+  const handleFetchMedia = async (e) => {
+    e.preventDefault();
+    if (!mediaUrlInput.trim()) return;
+
+    setMediaLoading(true);
+    setMediaError('');
+    setMediaResult(null);
+
+    try {
+      const res = await fetch(
+        `https://${API_HOST}/v2/media_info?code_or_id_or_url=${encodeURIComponent(mediaUrlInput.trim())}`,
+        { method: 'GET', headers }
+      );
+      if (!res.ok) throw new Error('Media data fetch nahi ho saka.');
+      const json = await res.json();
+      const media = json?.data || json;
+
+      const videoUrl = media.video_versions?.[0]?.url || media.video_url;
+      const imageUrl = media.image_versions2?.candidates?.[0]?.url || media.display_url;
+
+      setMediaResult({
+        isVideo: Boolean(videoUrl),
+        mediaUrl: videoUrl || imageUrl,
+        caption: media.caption?.text || 'Instagram Post',
+        likes: (media.like_count || 0).toLocaleString(),
+      });
+    } catch (err) {
+      setMediaError(err.message || 'Media download fetch failed.');
+    } finally {
+      setMediaLoading(false);
+    }
+  };
+
+  // ---------------- Audio Extractor (v1/extract_audio) ----------------
   const handleExtractAudio = async (e) => {
     e.preventDefault();
     if (!audioUrlInput.trim()) return;
@@ -337,40 +441,46 @@ export default function App() {
           <nav className="flex bg-slate-900 p-1 border border-slate-800 rounded-xl text-xs sm:text-sm font-medium">
             <button
               onClick={() => setActiveTab('viewer')}
-              className={`px-3 sm:px-4 py-1.5 rounded-lg transition ${activeTab === 'viewer' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'viewer' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               Profile Viewer
             </button>
             <button
-              onClick={() => setActiveTab('audio')}
-              className={`px-3 sm:px-4 py-1.5 rounded-lg transition ${activeTab === 'audio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              onClick={() => setActiveTab('downloader')}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'downloader' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
-              Audio Extractor
+              Downloader
+            </button>
+            <button
+              onClick={() => setActiveTab('audio')}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'audio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+            >
+              Audio
             </button>
             <button
               onClick={() => setActiveTab('highlights')}
-              className={`px-3 sm:px-4 py-1.5 rounded-lg transition ${activeTab === 'highlights' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'highlights' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
-              Highlight Maker
+              Covers
             </button>
             <button
               onClick={() => setActiveTab('bio')}
-              className={`px-3 sm:px-4 py-1.5 rounded-lg transition ${activeTab === 'bio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'bio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
-              Bio Generator
+              Bio
             </button>
           </nav>
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Main Container */}
       <main className="max-w-5xl mx-auto px-4 py-8 flex-1 w-full">
-        {/* ==================== TAB 1: VIEWER ==================== */}
+        {/* ==================== TAB 1: PROFILE VIEWER ==================== */}
         {activeTab === 'viewer' && (
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="text-center">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Full Instagram Anonymous Viewer</h1>
-              <p className="text-slate-400 text-sm mt-1">Multi-picture posts, reel downloader, audio aur stories ek jagah.</p>
+              <p className="text-slate-400 text-sm mt-1">Live profile info, multi-photo carousels, highlights, reels aur stories.</p>
             </div>
 
             <form onSubmit={handleSearch} className="flex gap-2">
@@ -378,7 +488,7 @@ export default function App() {
                 <span className="absolute left-3.5 top-3 text-slate-500 font-bold">@</span>
                 <input
                   type="text"
-                  placeholder="enter username (e.g. sooyaaa__)"
+                  placeholder="enter username (e.g. netflix.kr)"
                   value={searchUsername}
                   onChange={(e) => setSearchUsername(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition"
@@ -402,6 +512,7 @@ export default function App() {
 
             {searchedUser && (
               <div className="space-y-6">
+                {/* Profile Card */}
                 <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-5">
                   <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
                     <div className="relative">
@@ -457,6 +568,32 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Highlights Tray Section */}
+                {searchedUser.highlightsList.length > 0 && (
+                  <div className="space-y-2">
+                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Highlights</span>
+                    <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-none">
+                      {searchedUser.highlightsList.map((hl) => (
+                        <button
+                          key={hl.id}
+                          onClick={() => openHighlightMedia(hl.id, hl.title)}
+                          className="flex flex-col items-center gap-1.5 flex-shrink-0 group focus:outline-none"
+                        >
+                          <div className="w-16 h-16 rounded-full border-2 border-rose-500/80 p-0.5 group-hover:border-rose-400 transition">
+                            <img 
+                              src={safeMedia(hl.coverUrl)} 
+                              alt={hl.title} 
+                              referrerPolicy="no-referrer" 
+                              className="w-full h-full rounded-full object-cover" 
+                            />
+                          </div>
+                          <span className="text-[11px] font-medium text-slate-300 truncate max-w-[70px]">{hl.title}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Sub-Tabs */}
                 <div className="flex border-b border-slate-800 bg-slate-900/40 p-1.5 rounded-xl justify-between">
                   {[
@@ -477,7 +614,7 @@ export default function App() {
                   })}
                 </div>
 
-                {/* ================= POSTS VIEW (With Multi-Photo Support) ================= */}
+                {/* Posts Grid */}
                 {viewerTab === 'posts' && (
                   <div>
                     {searchedUser.postsList.length === 0 ? (
@@ -492,7 +629,6 @@ export default function App() {
                               referrerPolicy="no-referrer" 
                               className="w-full h-full object-cover transition duration-300 group-hover:scale-105" 
                             />
-                            {/* Carousel Tag for Multiple Images */}
                             {post.isCarousel && (
                               <span className="absolute top-2 right-2 bg-slate-900/80 backdrop-blur text-[10px] text-white px-2 py-0.5 rounded-md font-bold flex items-center gap-1 border border-slate-700">
                                 <Layers size={10} /> {post.allImages.length}
@@ -501,7 +637,12 @@ export default function App() {
                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex flex-col justify-between p-3 text-white">
                               <div className="flex justify-between text-xs font-medium">
                                 <span>❤️ {post.likes}</span>
-                                <span>💬 {post.comments}</span>
+                                <button 
+                                  onClick={() => openComments(post.shortcode || post.id)} 
+                                  className="hover:underline flex items-center gap-1"
+                                >
+                                  <MessageCircle size={12} /> {post.comments}
+                                </button>
                               </div>
                               <div className="flex gap-1.5">
                                 {post.isCarousel ? (
@@ -525,7 +666,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* ================= REELS VIEW (With Dedicated Download Button) ================= */}
+                {/* Reels Grid */}
                 {viewerTab === 'reels' && (
                   <div>
                     {searchedUser.reelsList.length === 0 ? (
@@ -555,28 +696,26 @@ export default function App() {
                                 <Play size={10} fill="currentColor" /> {reel.views}
                               </span>
                             </div>
-                            {/* Download Action Footer */}
-                            <div className="p-2.5 bg-slate-900 border-t border-slate-800">
-                              {reel.videoUrl ? (
+                            <div className="p-2.5 bg-slate-900 border-t border-slate-800 flex gap-1.5">
+                              {reel.videoUrl && (
                                 <a 
                                   href={reel.videoUrl} 
                                   target="_blank" 
                                   rel="noreferrer" 
                                   download={`fastgram-reel-${reel.id}.mp4`}
-                                  className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                                  className="flex-1 bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition"
                                 >
-                                  <Download size={14} /> Download Reel MP4
+                                  <Download size={13} /> Download
                                 </a>
-                              ) : (
-                                <a 
-                                  href={reel.thumbnail} 
-                                  target="_blank" 
-                                  rel="noreferrer" 
-                                  download 
-                                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition"
+                              )}
+                              {reel.shortcode && (
+                                <button
+                                  onClick={() => openComments(reel.shortcode)}
+                                  className="p-2 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-200"
+                                  title="View Comments"
                                 >
-                                  <Download size={14} /> Download Cover
-                                </a>
+                                  <MessageCircle size={15} />
+                                </button>
                               )}
                             </div>
                           </div>
@@ -586,7 +725,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* ================= STORIES VIEW ================= */}
+                {/* Stories Grid */}
                 {viewerTab === 'stories' && (
                   <div>
                     {searchedUser.storiesList.length === 0 ? (
@@ -620,75 +759,76 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== MODAL: ALL CAROUSEL PICTURES ==================== */}
-        {activeCarousel && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="relative max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-4 overflow-hidden space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                <span className="text-xs font-bold text-slate-300">
-                  Slide {carouselIndex + 1} of {activeCarousel.length}
-                </span>
-                <button 
-                  onClick={() => setActiveCarousel(null)}
-                  className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-300"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-
-              {/* Main Image Slider */}
-              <div className="relative aspect-square rounded-2xl overflow-hidden bg-black">
-                <img 
-                  src={safeMedia(activeCarousel[carouselIndex])} 
-                  alt={`Slide ${carouselIndex + 1}`} 
-                  referrerPolicy="no-referrer" 
-                  className="w-full h-full object-contain" 
-                />
-
-                {carouselIndex > 0 && (
-                  <button 
-                    onClick={() => setCarouselIndex(carouselIndex - 1)}
-                    className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white"
-                  >
-                    <ChevronLeft size={18} />
-                  </button>
-                )}
-                {carouselIndex < activeCarousel.length - 1 && (
-                  <button 
-                    onClick={() => setCarouselIndex(carouselIndex + 1)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white"
-                  >
-                    <ChevronRight size={18} />
-                  </button>
-                )}
-              </div>
-
-              {/* Download Current Slide */}
-              <a 
-                href={activeCarousel[carouselIndex]} 
-                target="_blank" 
-                rel="noreferrer" 
-                download 
-                className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold py-2.5 rounded-xl flex items-center justify-center gap-2"
-              >
-                <Download size={14} /> Download This Picture
-              </a>
+        {/* ==================== TAB 2: SINGLE MEDIA DOWNLOADER ==================== */}
+        {activeTab === 'downloader' && (
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div className="text-center">
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Post & Reel Direct Downloader</h1>
+              <p className="text-slate-400 text-sm mt-1">Kisi bhi Instagram URL ko paste karein aur full-quality video/image download karein.</p>
             </div>
+
+            <form onSubmit={handleFetchMedia} className="flex gap-2">
+              <input
+                type="url"
+                placeholder="https://www.instagram.com/reel/DaU63nnAkoo..."
+                value={mediaUrlInput}
+                onChange={(e) => setMediaUrlInput(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition"
+                required
+              />
+              <button
+                type="submit"
+                disabled={mediaLoading}
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2 transition disabled:opacity-50"
+              >
+                <Download size={16} /> {mediaLoading ? 'Fetching...' : 'Fetch'}
+              </button>
+            </form>
+
+            {mediaError && (
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl flex items-center justify-center gap-2">
+                <AlertCircle size={15} /> {mediaError}
+              </div>
+            )}
+
+            {mediaResult && (
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+                <div className="relative aspect-[9/16] max-h-[460px] mx-auto rounded-xl overflow-hidden bg-black flex items-center justify-center">
+                  {mediaResult.isVideo ? (
+                    <video src={mediaResult.mediaUrl} controls className="h-full w-full object-contain" />
+                  ) : (
+                    <img src={safeMedia(mediaResult.mediaUrl)} alt="Preview" className="h-full w-full object-contain" />
+                  )}
+                </div>
+                <div className="text-center space-y-2">
+                  <p className="text-xs text-slate-300 line-clamp-2">{mediaResult.caption}</p>
+                  <a
+                    href={mediaResult.mediaUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    download
+                    className="w-full bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition inline-flex"
+                  >
+                    <Download size={14} /> Download High Quality {mediaResult.isVideo ? 'MP4' : 'JPEG'}
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* ==================== TAB 2: AUDIO EXTRACTOR ==================== */}
+        {/* ==================== TAB 3: AUDIO EXTRACTOR ==================== */}
         {activeTab === 'audio' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Extract Reel Background Audio</h1>
-              <p className="text-slate-400 text-sm mt-1">Kisi bhi Instagram Reel ka link paste karein aur audio download karein.</p>
+              <p className="text-slate-400 text-sm mt-1">Reel ka link paste karein aur audio MP3 file download karein.</p>
             </div>
 
             <form onSubmit={handleExtractAudio} className="flex gap-2">
               <input
                 type="url"
-                placeholder="https://www.instagram.com/reel/..."
+                placeholder="https://www.instagram.com/reel/Dasc91AxozX..."
                 value={audioUrlInput}
                 onChange={(e) => setAudioUrlInput(e.target.value)}
                 className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition"
@@ -721,7 +861,7 @@ export default function App() {
                   target="_blank"
                   rel="noreferrer"
                   download
-                  className="w-full bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition"
+                  className="w-full bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition inline-flex"
                 >
                   <Download size={14} /> Download Audio MP3
                 </a>
@@ -730,7 +870,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== TAB 3: HIGHLIGHT MAKER ==================== */}
+        {/* ==================== TAB 4: HIGHLIGHT MAKER ==================== */}
         {activeTab === 'highlights' && (
           <div className="space-y-6">
             <div className="text-center max-w-lg mx-auto">
@@ -848,7 +988,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== TAB 4: BIO GENERATOR ==================== */}
+        {/* ==================== TAB 5: BIO GENERATOR ==================== */}
         {activeTab === 'bio' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
@@ -886,6 +1026,139 @@ export default function App() {
         )}
       </main>
 
+      {/* ==================== MODAL: MULTI-IMAGE CAROUSEL ==================== */}
+      {activeCarousel && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="relative max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-4 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <span className="text-xs font-bold text-slate-300">
+                Slide {carouselIndex + 1} of {activeCarousel.length}
+              </span>
+              <button 
+                onClick={() => setActiveCarousel(null)}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-300"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="relative aspect-square rounded-2xl overflow-hidden bg-black">
+              <img 
+                src={safeMedia(activeCarousel[carouselIndex])} 
+                alt={`Slide ${carouselIndex + 1}`} 
+                referrerPolicy="no-referrer" 
+                className="w-full h-full object-contain" 
+              />
+              {carouselIndex > 0 && (
+                <button 
+                  onClick={() => setCarouselIndex(carouselIndex - 1)}
+                  className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+              )}
+              {carouselIndex < activeCarousel.length - 1 && (
+                <button 
+                  onClick={() => setCarouselIndex(carouselIndex + 1)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white"
+                >
+                  <ChevronRight size={18} />
+                </button>
+              )}
+            </div>
+
+            <a 
+              href={activeCarousel[carouselIndex]} 
+              target="_blank" 
+              rel="noreferrer" 
+              download 
+              className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold py-2.5 rounded-xl flex items-center justify-center gap-2"
+            >
+              <Download size={14} /> Download This Picture
+            </a>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== MODAL: HIGHLIGHT MEDIA (STORIES) ==================== */}
+      {highlightModal.open && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="relative max-w-xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-4 max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="font-bold text-white text-sm">Highlight: {highlightModal.title}</h3>
+              <button 
+                onClick={() => setHighlightModal({ open: false, title: '', items: [], loading: false })}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-300"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {highlightModal.loading ? (
+              <p className="text-center text-xs text-slate-400 py-10">Fetching highlight stories...</p>
+            ) : highlightModal.items.length === 0 ? (
+              <p className="text-center text-xs text-slate-500 py-10">Koi media stories nahi mili.</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1">
+                {highlightModal.items.map((item) => (
+                  <div key={item.id} className="relative aspect-[9/16] rounded-xl overflow-hidden bg-black border border-slate-800 group">
+                    {item.isVideo ? (
+                      <video src={item.url} controls playsInline className="w-full h-full object-cover" />
+                    ) : (
+                      <img src={safeMedia(item.url)} alt="Story" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                    )}
+                    <a
+                      href={item.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      download
+                      className="absolute bottom-2 right-2 bg-rose-600 hover:bg-rose-700 p-1.5 rounded-lg text-white opacity-0 group-hover:opacity-100 transition shadow"
+                    >
+                      <Download size={12} />
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ==================== MODAL: COMMENTS VIEWER ==================== */}
+      {commentsModal.open && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="relative max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="font-bold text-white text-sm flex items-center gap-1.5">
+                <MessageCircle size={15} /> Media Comments
+              </h3>
+              <button 
+                onClick={() => setCommentsModal({ open: false, code: '', comments: [], loading: false })}
+                className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-300"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {commentsModal.loading ? (
+              <p className="text-center text-xs text-slate-400 py-10">Fetching comments...</p>
+            ) : commentsModal.comments.length === 0 ? (
+              <p className="text-center text-xs text-slate-500 py-10">Koi comments nahi mile ya disabled hain.</p>
+            ) : (
+              <div className="space-y-3 overflow-y-auto pr-1">
+                {commentsModal.comments.map((c, i) => (
+                  <div key={c.id || i} className="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-1">
+                    <span className="text-xs font-bold text-rose-400">@{c.user?.username || 'user'}</span>
+                    <p className="text-xs text-slate-200 leading-relaxed">{c.text}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
       <footer className="border-t border-slate-800 py-4 text-center text-xs text-slate-500">
         © 2026 Fastgram • Fast, Free & Anonymous Tools for Instagram
       </footer>
