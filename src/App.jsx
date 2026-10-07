@@ -1,13 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Instagram, Search, Sparkles, Copy, Check, Download, 
-  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, Film, Layers, History, Volume2, Play
+  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
 const API_KEY = '30468bbd66msh09095694867a49bp1bfa9djsn432e9272dd57';
 const API_HOST = 'instagram-public-bulk-scraper.p.rapidapi.com';
 
-// CDN 403 Forbidden hotlink bypass helper
 const safeMedia = (url) => {
   if (!url) return '';
   return `https://wsrv.nl/?url=${encodeURIComponent(url)}&default=404`;
@@ -105,7 +104,7 @@ export default function App() {
     link.click();
   };
 
-  // ==================== 2. SMART BIO GENERATOR ====================
+  // ==================== 2. BIO GENERATOR ====================
   const [bioCategory, setBioCategory] = useState('minimal');
   const [copiedBioIndex, setCopiedBioIndex] = useState(null);
 
@@ -138,12 +137,16 @@ export default function App() {
     setTimeout(() => setCopiedBioIndex(null), 2000);
   };
 
-  // ==================== 3. VIEWER & ROBUST RAPIDAPI PARSING ====================
+  // ==================== 3. VIEWER STATES ====================
   const [searchUsername, setSearchUsername] = useState('');
   const [searchedUser, setSearchedUser] = useState(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [viewerTab, setViewerTab] = useState('posts');
+
+  // Carousel Modal State (Multiple Photos)
+  const [activeCarousel, setActiveCarousel] = useState(null);
+  const [carouselIndex, setCarouselIndex] = useState(0);
 
   // Audio Extractor States
   const [audioUrlInput, setAudioUrlInput] = useState('');
@@ -166,33 +169,45 @@ export default function App() {
     setSearchedUser(null);
 
     try {
-      // 1. Fetch User Info Web
+      // 1. User Info Web (for multi-image posts carousel extract)
       const userRes = await fetch(
         `https://${API_HOST}/v1/user_info_web?username=${cleanUser}`,
         { method: 'GET', headers }
       );
 
-      if (!userRes.ok) throw new Error('Account fetch fail ho gaya ya private hai.');
+      if (!userRes.ok) throw new Error('Account nahi mila ya request limit cross ho gayi.');
       const userRaw = await userRes.json();
       const userDataObj = userRaw?.data?.user || userRaw?.user || userRaw?.data;
 
-      if (!userDataObj) throw new Error('User details nahi mili.');
+      if (!userDataObj) throw new Error('User details fetch nahi ho saki.');
 
       const userId = userDataObj.id || userDataObj.pk;
 
-      // Extract Timeline Posts
+      // Extract Timeline Posts with Sidecar Children (Multiple Images)
       const timelineEdges = userDataObj.edge_owner_to_timeline_media?.edges || [];
       const parsedPosts = timelineEdges.map((edge, i) => {
         const node = edge.node || edge;
+        
+        // Multi-image post extraction
+        const sidecarChildren = node.edge_sidecar_to_children?.edges || [];
+        let allImages = [];
+        if (sidecarChildren.length > 0) {
+          allImages = sidecarChildren.map(c => c.node?.display_url || c.node?.thumbnail_src).filter(Boolean);
+        } else if (node.display_url) {
+          allImages = [node.display_url];
+        }
+
         return {
           id: node.id || `post_${i}`,
           url: node.display_url || node.thumbnail_src || '',
+          allImages: allImages,
+          isCarousel: allImages.length > 1,
           likes: (node.edge_liked_by?.count || node.like_count || 0).toLocaleString(),
           comments: (node.edge_media_to_comment?.count || node.comment_count || 0).toLocaleString(),
         };
       });
 
-      // 2. Fetch Reels (v1/user_reels)
+      // 2. Fetch Reels
       let parsedReels = [];
       try {
         const reelsRes = await fetch(
@@ -201,7 +216,6 @@ export default function App() {
         );
         if (reelsRes.ok) {
           const reelsRaw = await reelsRes.json();
-          // API formats: data.items, items, ya direct data array
           const rawItems = reelsRaw?.data?.items || reelsRaw?.items || (Array.isArray(reelsRaw?.data) ? reelsRaw?.data : []);
           
           parsedReels = rawItems.map((r, i) => {
@@ -217,10 +231,10 @@ export default function App() {
           });
         }
       } catch (err) {
-        console.warn('Reels fetch issue:', err);
+        console.warn('Reels fetch skipped:', err);
       }
 
-      // 3. Fetch Active Stories (v1/download_story)
+      // 3. Fetch Active Stories (Both Direct Story & Backup Parser)
       let parsedStories = [];
       try {
         const storyRes = await fetch(
@@ -229,15 +243,20 @@ export default function App() {
         );
         if (storyRes.ok) {
           const storyRaw = await storyRes.json();
-          const storyItems = storyRaw?.data || storyRaw?.items || (Array.isArray(storyRaw) ? storyRaw : []);
+          const storyItems = storyRaw?.data || storyRaw?.items || storyRaw?.stories || (Array.isArray(storyRaw) ? storyRaw : []);
           
           if (Array.isArray(storyItems)) {
-            parsedStories = storyItems.map((s, i) => ({
-              id: s.id || s.pk || `story_${i}`,
-              mediaUrl: s.video_url || s.image_url || s.url || (s.video_versions?.[0]?.url) || (s.image_versions2?.candidates?.[0]?.url) || '',
-              thumbnail: s.image_url || (s.image_versions2?.candidates?.[0]?.url) || s.url || '',
-              isVideo: Boolean(s.video_url || s.video_versions?.[0]?.url || s.is_video),
-            }));
+            parsedStories = storyItems.map((s, i) => {
+              const item = s.media || s;
+              const vUrl = item.video_url || item.video_versions?.[0]?.url || '';
+              const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.url || item.display_url || '';
+              return {
+                id: item.id || item.pk || `story_${i}`,
+                mediaUrl: vUrl || iUrl,
+                thumbnail: iUrl || vUrl,
+                isVideo: Boolean(vUrl || item.is_video),
+              };
+            });
           }
         }
       } catch (err) {
@@ -351,7 +370,7 @@ export default function App() {
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="text-center">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Full Instagram Anonymous Viewer</h1>
-              <p className="text-slate-400 text-sm mt-1">Live DP, follower count, posts, reels aur stories bina login ke inspect karein.</p>
+              <p className="text-slate-400 text-sm mt-1">Multi-picture posts, reel downloader, audio aur stories ek jagah.</p>
             </div>
 
             <form onSubmit={handleSearch} className="flex gap-2">
@@ -458,7 +477,7 @@ export default function App() {
                   })}
                 </div>
 
-                {/* Posts View */}
+                {/* ================= POSTS VIEW (With Multi-Photo Support) ================= */}
                 {viewerTab === 'posts' && (
                   <div>
                     {searchedUser.postsList.length === 0 ? (
@@ -473,14 +492,31 @@ export default function App() {
                               referrerPolicy="no-referrer" 
                               className="w-full h-full object-cover transition duration-300 group-hover:scale-105" 
                             />
+                            {/* Carousel Tag for Multiple Images */}
+                            {post.isCarousel && (
+                              <span className="absolute top-2 right-2 bg-slate-900/80 backdrop-blur text-[10px] text-white px-2 py-0.5 rounded-md font-bold flex items-center gap-1 border border-slate-700">
+                                <Layers size={10} /> {post.allImages.length}
+                              </span>
+                            )}
                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex flex-col justify-between p-3 text-white">
                               <div className="flex justify-between text-xs font-medium">
                                 <span>❤️ {post.likes}</span>
                                 <span>💬 {post.comments}</span>
                               </div>
-                              <a href={post.url} target="_blank" rel="noreferrer" className="bg-rose-600 hover:bg-rose-700 text-[11px] py-1.5 font-bold rounded-lg text-center flex items-center justify-center gap-1">
-                                <Eye size={12} /> View Full
-                              </a>
+                              <div className="flex gap-1.5">
+                                {post.isCarousel ? (
+                                  <button
+                                    onClick={() => { setActiveCarousel(post.allImages); setCarouselIndex(0); }}
+                                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-[11px] py-1.5 font-bold rounded-lg text-center flex items-center justify-center gap-1"
+                                  >
+                                    <Layers size={12} /> All ({post.allImages.length})
+                                  </button>
+                                ) : (
+                                  <a href={post.url} target="_blank" rel="noreferrer" className="flex-1 bg-rose-600 hover:bg-rose-700 text-[11px] py-1.5 font-bold rounded-lg text-center flex items-center justify-center gap-1">
+                                    <Eye size={12} /> View Full
+                                  </a>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -489,34 +525,60 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Reels View */}
+                {/* ================= REELS VIEW (With Dedicated Download Button) ================= */}
                 {viewerTab === 'reels' && (
                   <div>
                     {searchedUser.reelsList.length === 0 ? (
                       <p className="text-center text-xs text-slate-500 py-8">Koi reels nahi mili ya account reels private hain.</p>
                     ) : (
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                         {searchedUser.reelsList.map((reel) => (
-                          <div key={reel.id} className="group relative aspect-[9/16] rounded-xl overflow-hidden bg-slate-900 border border-slate-800">
-                            {reel.videoUrl ? (
-                              <video 
-                                src={reel.videoUrl} 
-                                poster={safeMedia(reel.thumbnail)} 
-                                controls 
-                                playsInline 
-                                className="w-full h-full object-cover" 
-                              />
-                            ) : (
-                              <img 
-                                src={safeMedia(reel.thumbnail)} 
-                                alt="Reel" 
-                                referrerPolicy="no-referrer" 
-                                className="w-full h-full object-cover" 
-                              />
-                            )}
-                            <span className="absolute top-2 left-2 text-[10px] bg-black/70 px-2 py-0.5 rounded font-bold text-white flex items-center gap-1">
-                              <Play size={10} fill="currentColor" /> {reel.views}
-                            </span>
+                          <div key={reel.id} className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col">
+                            <div className="relative aspect-[9/16] bg-black">
+                              {reel.videoUrl ? (
+                                <video 
+                                  src={reel.videoUrl} 
+                                  poster={safeMedia(reel.thumbnail)} 
+                                  controls 
+                                  playsInline 
+                                  className="w-full h-full object-cover" 
+                                />
+                              ) : (
+                                <img 
+                                  src={safeMedia(reel.thumbnail)} 
+                                  alt="Reel" 
+                                  referrerPolicy="no-referrer" 
+                                  className="w-full h-full object-cover" 
+                                />
+                              )}
+                              <span className="absolute top-2 left-2 text-[10px] bg-black/70 px-2 py-0.5 rounded font-bold text-white flex items-center gap-1">
+                                <Play size={10} fill="currentColor" /> {reel.views}
+                              </span>
+                            </div>
+                            {/* Download Action Footer */}
+                            <div className="p-2.5 bg-slate-900 border-t border-slate-800">
+                              {reel.videoUrl ? (
+                                <a 
+                                  href={reel.videoUrl} 
+                                  target="_blank" 
+                                  rel="noreferrer" 
+                                  download={`fastgram-reel-${reel.id}.mp4`}
+                                  className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-[0.98]"
+                                >
+                                  <Download size={14} /> Download Reel MP4
+                                </a>
+                              ) : (
+                                <a 
+                                  href={reel.thumbnail} 
+                                  target="_blank" 
+                                  rel="noreferrer" 
+                                  download 
+                                  className="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2 rounded-xl flex items-center justify-center gap-1.5 transition"
+                                >
+                                  <Download size={14} /> Download Cover
+                                </a>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -524,7 +586,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Stories View */}
+                {/* ================= STORIES VIEW ================= */}
                 {viewerTab === 'stories' && (
                   <div>
                     {searchedUser.storiesList.length === 0 ? (
@@ -538,8 +600,14 @@ export default function App() {
                             ) : (
                               <img src={safeMedia(story.mediaUrl)} alt="Story" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
                             )}
-                            <a href={story.mediaUrl} target="_blank" rel="noreferrer" className="absolute bottom-2 right-2 bg-rose-600 hover:bg-rose-700 text-[11px] px-2 py-1 font-bold rounded-lg text-white flex items-center gap-1 shadow">
-                              <Download size={12} /> Save
+                            <a 
+                              href={story.mediaUrl} 
+                              target="_blank" 
+                              rel="noreferrer" 
+                              download 
+                              className="absolute bottom-2 right-2 bg-rose-600 hover:bg-rose-700 text-[11px] px-2.5 py-1.5 font-bold rounded-lg text-white flex items-center gap-1 shadow-lg"
+                            >
+                              <Download size={12} /> Download
                             </a>
                           </div>
                         ))}
@@ -549,6 +617,63 @@ export default function App() {
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ==================== MODAL: ALL CAROUSEL PICTURES ==================== */}
+        {activeCarousel && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="relative max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-4 overflow-hidden space-y-4">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <span className="text-xs font-bold text-slate-300">
+                  Slide {carouselIndex + 1} of {activeCarousel.length}
+                </span>
+                <button 
+                  onClick={() => setActiveCarousel(null)}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-300"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              {/* Main Image Slider */}
+              <div className="relative aspect-square rounded-2xl overflow-hidden bg-black">
+                <img 
+                  src={safeMedia(activeCarousel[carouselIndex])} 
+                  alt={`Slide ${carouselIndex + 1}`} 
+                  referrerPolicy="no-referrer" 
+                  className="w-full h-full object-contain" 
+                />
+
+                {carouselIndex > 0 && (
+                  <button 
+                    onClick={() => setCarouselIndex(carouselIndex - 1)}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white"
+                  >
+                    <ChevronLeft size={18} />
+                  </button>
+                )}
+                {carouselIndex < activeCarousel.length - 1 && (
+                  <button 
+                    onClick={() => setCarouselIndex(carouselIndex + 1)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2 bg-black/60 hover:bg-black/80 rounded-full text-white"
+                  >
+                    <ChevronRight size={18} />
+                  </button>
+                )}
+              </div>
+
+              {/* Download Current Slide */}
+              <a 
+                href={activeCarousel[carouselIndex]} 
+                target="_blank" 
+                rel="noreferrer" 
+                download 
+                className="w-full bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold py-2.5 rounded-xl flex items-center justify-center gap-2"
+              >
+                <Download size={14} /> Download This Picture
+              </a>
+            </div>
           </div>
         )}
 
