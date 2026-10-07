@@ -2,12 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Instagram, Search, Sparkles, Copy, Check, Download, 
   Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, 
-  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle, FolderHeart, Link as LinkIcon
+  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle, FolderHeart
 } from 'lucide-react';
 
 const API_KEY = '30468bbd66msh09095694867a49bp1bfa9djsn432e9272dd57';
 const API_HOST = 'instagram-public-bulk-scraper.p.rapidapi.com';
 
+// CDN 403 Forbidden hotlink bypass helper
 const safeMedia = (url) => {
   if (!url) return '';
   return `https://wsrv.nl/?url=${encodeURIComponent(url)}&default=404`;
@@ -143,25 +144,28 @@ export default function App() {
     setTimeout(() => setCopiedBioIndex(null), 2000);
   };
 
-  // ==================== 3. ANONYMOUS VIEWER STATES ====================
+  // ==================== 3. VIEWER STATES ====================
   const [searchUsername, setSearchUsername] = useState('');
   const [searchedUser, setSearchedUser] = useState(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [viewerTab, setViewerTab] = useState('posts');
 
+  // Carousel Modal (Multi-Images)
   const [activeCarousel, setActiveCarousel] = useState(null);
   const [carouselIndex, setCarouselIndex] = useState(0);
+
+  // Comments Modal
   const [commentsModal, setCommentsModal] = useState({ open: false, code: '', comments: [], loading: false });
 
-  // ==================== 4. DEDICATED HIGHLIGHTS STATES ====================
+  // ==================== 4. DEDICATED HIGHLIGHTS TAB STATES ====================
   const [hlInputUser, setHlInputUser] = useState('');
   const [hlLoading, setHlLoading] = useState(false);
   const [hlList, setHlList] = useState([]);
   const [hlError, setHlError] = useState('');
   const [activeHlMedia, setActiveHlMedia] = useState({ open: false, title: '', items: [], loading: false });
 
-  // ==================== 5. DEDICATED STORIES STATES ====================
+  // ==================== 5. DEDICATED STORIES TAB STATES ====================
   const [storyInputUser, setStoryInputUser] = useState('');
   const [storyLoading, setStoryLoading] = useState(false);
   const [storyList, setStoryList] = useState([]);
@@ -178,79 +182,61 @@ export default function App() {
   const [extractedAudio, setExtractedAudio] = useState(null);
   const [audioError, setAudioError] = useState('');
 
-  // ---------------- HELPER: ROBUST STORY PARSER ----------------
-  const extractMediaItemsFromStory = (rawJson) => {
-    if (!rawJson) return [];
+  // ---------------- Story Fetch Engine (Safe Deep Parser) ----------------
+  const fetchStoriesForUser = async (cleanUsername) => {
+    const res = await fetch(
+      `https://${API_HOST}/v1/download_story?username=${cleanUsername}`,
+      { method: 'GET', headers }
+    );
+    if (!res.ok) return [];
+    const storyRaw = await res.json();
+    
+    // Deep fallback extraction for stories
+    const rawItems = 
+      storyRaw?.data?.items || 
+      storyRaw?.data?.stories || 
+      storyRaw?.stories || 
+      storyRaw?.items || 
+      (Array.isArray(storyRaw?.data) ? storyRaw.data : []) || 
+      (Array.isArray(storyRaw) ? storyRaw : []);
 
-    let candidates = [];
-    if (Array.isArray(rawJson)) {
-      candidates = rawJson;
-    } else if (Array.isArray(rawJson.data)) {
-      candidates = rawJson.data;
-    } else if (Array.isArray(rawJson.items)) {
-      candidates = rawJson.items;
-    } else if (Array.isArray(rawJson.stories)) {
-      candidates = rawJson.stories;
-    } else if (rawJson.data && typeof rawJson.data === 'object') {
-      if (Array.isArray(rawJson.data.items)) candidates = rawJson.data.items;
-      else if (Array.isArray(rawJson.data.stories)) candidates = rawJson.data.stories;
-      else if (rawJson.data.media_url || rawJson.data.url) candidates = [rawJson.data];
-    } else if (rawJson.media_url || rawJson.url || rawJson.video_url) {
-      candidates = [rawJson];
-    }
-
-    return candidates.map((item, idx) => {
-      const it = item.media || item;
-      const vUrl = 
-        it.video_url || 
-        it.video_versions?.[0]?.url || 
-        (it.is_video ? (it.url || it.media_url) : '') || 
-        '';
-      
-      const iUrl = 
-        it.image_url || 
-        it.image_versions2?.candidates?.[0]?.url || 
-        it.display_url || 
-        it.thumbnail_url || 
-        it.media_url || 
-        it.url || 
-        '';
-
+    return rawItems.map((s, i) => {
+      const item = s.media || s;
+      const vUrl = item.video_url || item.video_versions?.[0]?.url || (item.is_video ? item.url : '') || '';
+      const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.display_url || item.url || '';
       const finalUrl = vUrl || iUrl;
       return {
-        id: it.id || it.pk || `story_${idx}`,
+        id: item.id || item.pk || `story_${i}`,
         mediaUrl: finalUrl,
         thumbnail: iUrl || vUrl,
-        isVideo: Boolean(vUrl || it.is_video),
-        time: it.taken_at ? new Date(it.taken_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Active Story'
+        isVideo: Boolean(vUrl || item.is_video),
+        time: item.taken_at ? new Date(item.taken_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Active Story'
       };
-    }).filter(x => Boolean(x.mediaUrl));
+    }).filter(x => x.mediaUrl);
   };
 
-  // ---------------- HELPER: ROBUST HIGHLIGHT PARSER ----------------
-  const extractHighlightsList = (rawJson) => {
-    if (!rawJson) return [];
+  // ---------------- Highlights Fetch Engine ----------------
+  const fetchHighlightsForUser = async (userOrId) => {
+    const res = await fetch(
+      `https://${API_HOST}/v1/user_highlights?username_or_id=${userOrId}`,
+      { method: 'GET', headers }
+    );
+    if (!res.ok) return [];
+    const hlRaw = await res.json();
+    const hlItems = 
+      hlRaw?.data?.tray || 
+      hlRaw?.tray || 
+      hlRaw?.data?.items || 
+      hlRaw?.data || 
+      (Array.isArray(hlRaw) ? hlRaw : []);
 
-    let tray = [];
-    if (Array.isArray(rawJson)) {
-      tray = rawJson;
-    } else if (rawJson.data) {
-      if (Array.isArray(rawJson.data.tray)) tray = rawJson.data.tray;
-      else if (Array.isArray(rawJson.data)) tray = rawJson.data;
-      else if (Array.isArray(rawJson.data.items)) tray = rawJson.data.items;
-    } else if (Array.isArray(rawJson.tray)) {
-      tray = rawJson.tray;
-    }
-
-    return tray.map((hl, i) => {
+    return hlItems.map((hl, i) => {
       const cover = 
         hl.cover_media?.cropped_image_version?.url || 
         hl.cover_media?.image_versions2?.candidates?.[0]?.url ||
         hl.cover_media_crop_info?.url ||
         hl.custom_cover_media_url ||
-        hl.cover_url ||
         '';
-
       return {
         id: hl.id || `hl_${i}`,
         title: hl.title || 'Highlight',
@@ -259,7 +245,7 @@ export default function App() {
     });
   };
 
-  // ---------------- 1. VIEWER SEARCH ----------------
+  // ---------------- 1. Handle Viewer Search ----------------
   const handleSearch = async (e) => {
     e.preventDefault();
     const cleanUser = searchUsername.trim().replace('@', '');
@@ -270,6 +256,7 @@ export default function App() {
     setSearchedUser(null);
 
     try {
+      // User Info Web
       const userRes = await fetch(
         `https://${API_HOST}/v1/user_info_web?username=${cleanUser}`,
         { method: 'GET', headers }
@@ -283,6 +270,7 @@ export default function App() {
 
       const numericUserId = userDataObj.id || userDataObj.pk;
 
+      // Extract Timeline Posts with Multiple Photos
       const timelineEdges = userDataObj.edge_owner_to_timeline_media?.edges || [];
       const parsedPosts = timelineEdges.map((edge, i) => {
         const node = edge.node || edge;
@@ -305,7 +293,7 @@ export default function App() {
         };
       });
 
-      // Reels
+      // Fetch Reels
       let parsedReels = [];
       try {
         const reelsRes = await fetch(
@@ -327,17 +315,13 @@ export default function App() {
           });
         }
       } catch (err) {
-        console.warn('Reels fetch skipped:', err);
+        console.warn('Reels skipped:', err);
       }
 
-      // Stories
+      // Fetch Stories
       let parsedStories = [];
       try {
-        const storyRes = await fetch(`https://${API_HOST}/v1/download_story?username=${cleanUser}`, { headers });
-        if (storyRes.ok) {
-          const storyData = await storyRes.json();
-          parsedStories = extractMediaItemsFromStory(storyData);
-        }
+        parsedStories = await fetchStoriesForUser(cleanUser);
       } catch (err) {
         console.warn('Stories skipped:', err);
       }
@@ -364,44 +348,31 @@ export default function App() {
     }
   };
 
-  // ---------------- 2. DEDICATED STORIES (BY USERNAME YA URL) ----------------
+  // ---------------- 2. Dedicated Stories Search ----------------
   const handleStorySearch = async (e) => {
     e.preventDefault();
-    const query = storyInputUser.trim();
-    if (!query) return;
+    const clean = storyInputUser.trim().replace('@', '');
+    if (!clean) return;
 
     setStoryLoading(true);
     setStoryError('');
     setStoryList([]);
 
     try {
-      let urlToCall = '';
-      if (query.includes('instagram.com/stories/')) {
-        urlToCall = `https://${API_HOST}/v1/download_story_by_url?url=${encodeURIComponent(query)}`;
+      const stories = await fetchStoriesForUser(clean);
+      if (stories.length === 0) {
+        setStoryError('Is user ki koi active story (24 hrs) nahi mili ya account private hai.');
       } else {
-        const cleanName = query.replace('@', '');
-        urlToCall = `https://${API_HOST}/v1/download_story?username=${cleanName}`;
-      }
-
-      const res = await fetch(urlToCall, { headers });
-      if (!res.ok) throw new Error('API ne response nahi diya.');
-      
-      const json = await res.json();
-      const extracted = extractMediaItemsFromStory(json);
-
-      if (extracted.length === 0) {
-        setStoryError('Is account par pichhle 24 ghante mein koi active story post nahi hui ya account private hai.');
-      } else {
-        setStoryList(extracted);
+        setStoryList(stories);
       }
     } catch (err) {
-      setStoryError('Story load nahi ho saki. Please username check karein.');
+      setStoryError('Story fetch nahi ho saki. Please username check karein.');
     } finally {
       setStoryLoading(false);
     }
   };
 
-  // ---------------- 3. DEDICATED HIGHLIGHTS TRAY ----------------
+  // ---------------- 3. Dedicated Highlights Search ----------------
   const handleHighlightSearch = async (e) => {
     e.preventDefault();
     const clean = hlInputUser.trim().replace('@', '');
@@ -412,41 +383,35 @@ export default function App() {
     setHlList([]);
 
     try {
-      // 1. Direct try with username
-      let res = await fetch(`https://${API_HOST}/v1/user_highlights?username_or_id=${clean}`, { headers });
-      let data = res.ok ? await res.json() : null;
-      let parsed = extractHighlightsList(data);
-
-      // 2. If empty, try resolving numeric ID first
-      if (parsed.length === 0) {
+      // First get numeric user ID if possible
+      let targetId = clean;
+      try {
         const infoRes = await fetch(`https://${API_HOST}/v1/user_info_web?username=${clean}`, { headers });
         if (infoRes.ok) {
           const infoJson = await infoRes.json();
           const uObj = infoJson?.data?.user || infoJson?.user || infoJson?.data;
-          const numId = uObj?.id || uObj?.pk;
-          if (numId) {
-            const res2 = await fetch(`https://${API_HOST}/v1/user_highlights?username_or_id=${numId}`, { headers });
-            if (res2.ok) {
-              const data2 = await res2.json();
-              parsed = extractHighlightsList(data2);
-            }
+          if (uObj?.id || uObj?.pk) {
+            targetId = uObj.id || uObj.pk;
           }
         }
+      } catch (e) {
+        console.warn('ID lookup fallback to username');
       }
 
-      if (parsed.length === 0) {
-        setHlError('Is user ke profile par koi highlights nahi mili.');
+      const highlights = await fetchHighlightsForUser(targetId);
+      if (highlights.length === 0) {
+        setHlError('Is user ki koi highlights nahi mili.');
       } else {
-        setHlList(parsed);
+        setHlList(highlights);
       }
     } catch (err) {
-      setHlError('Highlights fetch request fail ho gayi.');
+      setHlError('Highlights fetch fail ho gayi.');
     } finally {
       setHlLoading(false);
     }
   };
 
-  // ---------------- 4. OPEN HIGHLIGHT STORIES (v1/highlight_media) ----------------
+  // ---------------- 4. Open Highlight Stories (v1/highlight_media) ----------------
   const openHighlightMedia = async (highlightId, title) => {
     const cleanId = String(highlightId).replace('highlight:', '');
     setActiveHlMedia({ open: true, title, items: [], loading: true });
@@ -478,11 +443,12 @@ export default function App() {
 
       setActiveHlMedia({ open: true, title, items: parsedItems, loading: false });
     } catch (err) {
+      console.error(err);
       setActiveHlMedia({ open: true, title, items: [], loading: false });
     }
   };
 
-  // ---------------- 5. COMMENTS (v1/media_comments) ----------------
+  // ---------------- 5. Open Post Comments (v1/media_comments) ----------------
   const openComments = async (codeOrId) => {
     setCommentsModal({ open: true, code: codeOrId, comments: [], loading: true });
     try {
@@ -499,7 +465,7 @@ export default function App() {
     }
   };
 
-  // ---------------- 6. MEDIA DOWNLOADER (v2/media_info) ----------------
+  // ---------------- 6. Single Media Downloader (v2/media_info) ----------------
   const handleFetchMedia = async (e) => {
     e.preventDefault();
     if (!mediaUrlInput.trim()) return;
@@ -532,7 +498,7 @@ export default function App() {
     }
   };
 
-  // ---------------- 7. AUDIO EXTRACTOR (v1/extract_audio) ----------------
+  // ---------------- 7. Reel Audio Extractor (v1/extract_audio) ----------------
   const handleExtractAudio = async (e) => {
     e.preventDefault();
     if (!audioUrlInput.trim()) return;
@@ -568,7 +534,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      {/* Header */}
+      {/* Top Navbar */}
       <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-4 py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -628,9 +594,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Content */}
+      {/* Main Container */}
       <main className="max-w-5xl mx-auto px-4 py-8 flex-1 w-full">
-        {/* ==================== 1. VIEWER TAB ==================== */}
+        {/* ==================== 1. PROFILE VIEWER TAB ==================== */}
         {activeTab === 'viewer' && (
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="text-center">
@@ -742,7 +708,7 @@ export default function App() {
                   })}
                 </div>
 
-                {/* Posts */}
+                {/* Posts Grid */}
                 {viewerTab === 'posts' && (
                   <div>
                     {searchedUser.postsList.length === 0 ? (
@@ -794,7 +760,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Reels */}
+                {/* Reels Grid */}
                 {viewerTab === 'reels' && (
                   <div>
                     {searchedUser.reelsList.length === 0 ? (
@@ -853,7 +819,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Stories in Viewer */}
+                {/* Stories Grid */}
                 {viewerTab === 'stories' && (
                   <div>
                     {searchedUser.storiesList.length === 0 ? (
@@ -895,7 +861,7 @@ export default function App() {
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="text-center">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Instagram Highlights Viewer</h1>
-              <p className="text-slate-400 text-sm mt-1">Username enter karein aur saare highlights folder khol kar unke videos dekhein.</p>
+              <p className="text-slate-400 text-sm mt-1">Username daalein, saare highlights folder dekhein aur unki stories khol kar download karein.</p>
             </div>
 
             <form onSubmit={handleHighlightSearch} className="flex gap-2 max-w-xl mx-auto">
@@ -927,7 +893,7 @@ export default function App() {
 
             {hlList.length > 0 && (
               <div className="space-y-4 pt-4">
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Found {hlList.length} Highlights Folders (Click to open)</h3>
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Found {hlList.length} Highlights Albums (Click to open)</h3>
                 <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-4">
                   {hlList.map((hl) => (
                     <button
@@ -958,7 +924,7 @@ export default function App() {
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="text-center">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Instagram Active Stories Downloader</h1>
-              <p className="text-slate-400 text-sm mt-1">Username ya direct Story URL daalein aur live 24h stories download karein.</p>
+              <p className="text-slate-400 text-sm mt-1">24-ghante ki active stories anonymously watch aur download karein bina login ke.</p>
             </div>
 
             <form onSubmit={handleStorySearch} className="flex gap-2 max-w-xl mx-auto">
@@ -966,7 +932,7 @@ export default function App() {
                 <span className="absolute left-3.5 top-3 text-slate-500 font-bold">@</span>
                 <input
                   type="text"
-                  placeholder="username (rhode) ya story url..."
+                  placeholder="enter username (e.g. virat.kohli)"
                   value={storyInputUser}
                   onChange={(e) => setStoryInputUser(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition"
