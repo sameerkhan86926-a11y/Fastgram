@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Instagram, Search, Sparkles, Copy, Check, Download, 
   Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, 
-  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle, Link as LinkIcon
+  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle
 } from 'lucide-react';
 
 const API_KEY = '30468bbd66msh09095694867a49bp1bfa9djsn432e9272dd57';
@@ -154,13 +154,13 @@ export default function App() {
   const [activeCarousel, setActiveCarousel] = useState(null);
   const [carouselIndex, setCarouselIndex] = useState(0);
 
-  // Highlight Media Stories Modal
+  // Highlight Media Modal
   const [highlightModal, setHighlightModal] = useState({ open: false, title: '', items: [], loading: false });
 
   // Post Comments Modal
   const [commentsModal, setCommentsModal] = useState({ open: false, code: '', comments: [], loading: false });
 
-  // ==================== 4. DOWNLODER & AUDIO TOOLS ====================
+  // ==================== 4. DOWNLOADER & AUDIO TOOLS ====================
   const [mediaUrlInput, setMediaUrlInput] = useState('');
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaResult, setMediaResult] = useState(null);
@@ -171,7 +171,7 @@ export default function App() {
   const [extractedAudio, setExtractedAudio] = useState(null);
   const [audioError, setAudioError] = useState('');
 
-  // ---------------- Viewer Handler ----------------
+  // Search Handler
   const handleSearch = async (e) => {
     e.preventDefault();
     const cleanUser = searchUsername.trim().replace('@', '');
@@ -182,21 +182,21 @@ export default function App() {
     setSearchedUser(null);
 
     try {
-      // 1. Fetch User Info Web (v1/user_info_web)
+      // 1. Fetch User Info Web
       const userRes = await fetch(
         `https://${API_HOST}/v1/user_info_web?username=${cleanUser}`,
         { method: 'GET', headers }
       );
 
-      if (!userRes.ok) throw new Error('Account nahi mila ya API issue hai.');
+      if (!userRes.ok) throw new Error('Account nahi mila ya API limit exhaust ho gayi.');
       const userRaw = await userRes.json();
       const userDataObj = userRaw?.data?.user || userRaw?.user || userRaw?.data;
 
-      if (!userDataObj) throw new Error('User details load nahi ho payi.');
+      if (!userDataObj) throw new Error('User details fetch nahi ho saki.');
 
-      const userId = userDataObj.id || userDataObj.pk;
+      const numericUserId = userDataObj.id || userDataObj.pk;
 
-      // Extract Multi-image Posts
+      // Extract Timeline Posts (With Carousel Support)
       const timelineEdges = userDataObj.edge_owner_to_timeline_media?.edges || [];
       const parsedPosts = timelineEdges.map((edge, i) => {
         const node = edge.node || edge;
@@ -223,7 +223,7 @@ export default function App() {
       let parsedReels = [];
       try {
         const reelsRes = await fetch(
-          `https://${API_HOST}/v1/user_reels?username_or_id=${userId || cleanUser}`,
+          `https://${API_HOST}/v1/user_reels?username_or_id=${numericUserId || cleanUser}`,
           { method: 'GET', headers }
         );
         if (reelsRes.ok) {
@@ -253,18 +253,24 @@ export default function App() {
         );
         if (storyRes.ok) {
           const storyRaw = await storyRes.json();
-          const storyItems = storyRaw?.data || storyRaw?.items || (Array.isArray(storyRaw) ? storyRaw : []);
-          if (Array.isArray(storyItems)) {
-            parsedStories = storyItems.map((s, i) => {
+          const storyList = 
+            storyRaw?.data?.items || 
+            storyRaw?.data || 
+            storyRaw?.items || 
+            storyRaw?.stories || 
+            (Array.isArray(storyRaw) ? storyRaw : []);
+
+          if (Array.isArray(storyList)) {
+            parsedStories = storyList.map((s, i) => {
               const item = s.media || s;
-              const vUrl = item.video_url || item.video_versions?.[0]?.url || '';
-              const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.url || '';
+              const vUrl = item.video_url || item.video_versions?.[0]?.url || (item.is_video ? item.url : '') || '';
+              const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.display_url || item.url || '';
               return {
-                id: item.id || `story_${i}`,
+                id: item.id || item.pk || `story_${i}`,
                 mediaUrl: vUrl || iUrl,
                 isVideo: Boolean(vUrl || item.is_video),
               };
-            });
+            }).filter(item => item.mediaUrl);
           }
         }
       } catch (err) {
@@ -274,19 +280,35 @@ export default function App() {
       // 4. Fetch User Highlights Tray (v1/user_highlights)
       let parsedHighlights = [];
       try {
+        const targetId = numericUserId ? numericUserId : cleanUser;
         const hlRes = await fetch(
-          `https://${API_HOST}/v1/user_highlights?username_or_id=${userId || cleanUser}`,
+          `https://${API_HOST}/v1/user_highlights?username_or_id=${targetId}`,
           { method: 'GET', headers }
         );
         if (hlRes.ok) {
           const hlRaw = await hlRes.json();
-          const hlItems = hlRaw?.data?.tray || hlRaw?.data || hlRaw?.tray || [];
+          const hlItems = 
+            hlRaw?.data?.tray || 
+            hlRaw?.tray || 
+            hlRaw?.data?.items || 
+            hlRaw?.data || 
+            (Array.isArray(hlRaw) ? hlRaw : []);
+
           if (Array.isArray(hlItems)) {
-            parsedHighlights = hlItems.map((hl) => ({
-              id: hl.id,
-              title: hl.title || 'Highlight',
-              coverUrl: hl.cover_media?.cropped_image_version?.url || hl.cover_media?.image_versions2?.candidates?.[0]?.url || '',
-            }));
+            parsedHighlights = hlItems.map((hl, i) => {
+              const cover = 
+                hl.cover_media?.cropped_image_version?.url || 
+                hl.cover_media?.image_versions2?.candidates?.[0]?.url ||
+                hl.cover_media_crop_info?.url ||
+                hl.custom_cover_media_url ||
+                '';
+              
+              return {
+                id: hl.id || `hl_${i}`,
+                title: hl.title || 'Highlight',
+                coverUrl: cover,
+              };
+            });
           }
         }
       } catch (err) {
@@ -316,29 +338,44 @@ export default function App() {
     }
   };
 
-  // ---------------- Fetch Highlight Media (v1/highlight_media) ----------------
+  // Open Highlight Media Modal (v1/highlight_media)
   const openHighlightMedia = async (highlightId, title) => {
+    const cleanId = String(highlightId).replace('highlight:', '');
     setHighlightModal({ open: true, title, items: [], loading: true });
+
     try {
       const res = await fetch(
-        `https://${API_HOST}/v1/highlight_media?highlight_id=${highlightId}`,
+        `https://${API_HOST}/v1/highlight_media?highlight_id=${cleanId}`,
         { method: 'GET', headers }
       );
       if (!res.ok) throw new Error('Highlight media fetch nahi ho saki.');
       const data = await res.json();
-      const items = data?.data?.items || data?.items || [];
-      const parsedItems = items.map((m, i) => ({
-        id: m.id || `hl_m_${i}`,
-        url: m.video_versions?.[0]?.url || m.image_versions2?.candidates?.[0]?.url || '',
-        isVideo: Boolean(m.video_versions?.[0]?.url),
-      }));
+      
+      const items = 
+        data?.data?.items || 
+        data?.data?.media || 
+        data?.items || 
+        (Array.isArray(data?.data) ? data.data : []);
+
+      const parsedItems = items.map((m, i) => {
+        const item = m.media || m;
+        const vUrl = item.video_versions?.[0]?.url || item.video_url || '';
+        const iUrl = item.image_versions2?.candidates?.[0]?.url || item.display_url || item.url || '';
+        return {
+          id: item.id || `hl_m_${i}`,
+          url: vUrl || iUrl,
+          isVideo: Boolean(vUrl || item.is_video),
+        };
+      }).filter(item => item.url);
+
       setHighlightModal({ open: true, title, items: parsedItems, loading: false });
     } catch (err) {
+      console.error(err);
       setHighlightModal({ open: true, title, items: [], loading: false });
     }
   };
 
-  // ---------------- Fetch Post Comments (v1/media_comments) ----------------
+  // Open Post Comments Modal (v1/media_comments)
   const openComments = async (codeOrId) => {
     setCommentsModal({ open: true, code: codeOrId, comments: [], loading: true });
     try {
@@ -355,7 +392,7 @@ export default function App() {
     }
   };
 
-  // ---------------- Single Media Info (v2/media_info) ----------------
+  // Fetch Single Media Info (v2/media_info)
   const handleFetchMedia = async (e) => {
     e.preventDefault();
     if (!mediaUrlInput.trim()) return;
@@ -389,7 +426,7 @@ export default function App() {
     }
   };
 
-  // ---------------- Audio Extractor (v1/extract_audio) ----------------
+  // Extract Audio from Reel (v1/extract_audio)
   const handleExtractAudio = async (e) => {
     e.preventDefault();
     if (!audioUrlInput.trim()) return;
@@ -417,7 +454,7 @@ export default function App() {
         audioUrl: audioData.audio_url || audioData.download_url,
       });
     } catch (err) {
-      setAudioError(err.message || 'Extracting failed.');
+      setAudioError(err.message || 'Audio extracting failed.');
     } finally {
       setAudioLoading(false);
     }
@@ -568,7 +605,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Highlights Tray Section */}
+                {/* Highlights Tray */}
                 {searchedUser.highlightsList.length > 0 && (
                   <div className="space-y-2">
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Highlights</span>
