@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Instagram, Search, Sparkles, Image as ImageIcon, Copy, Check, Download, 
-  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye
+  Instagram, Search, Sparkles, Copy, Check, Download, 
+  Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle
 } from 'lucide-react';
 
 export default function App() {
@@ -9,7 +9,7 @@ export default function App() {
 
   // --- HIGHLIGHT MAKER STATES ---
   const canvasRef = useRef(null);
-  const [bgType, setBgType] = useState('solid'); // 'solid' or 'gradient'
+  const [bgType, setBgType] = useState('solid');
   const [bgColor1, setBgColor1] = useState('#0f172a');
   const [bgColor2, setBgColor2] = useState('#3b82f6');
   const [iconColor, setIconColor] = useState('#ffffff');
@@ -30,7 +30,6 @@ export default function App() {
     { name: 'User', component: User },
   ];
 
-  // Render Canvas (1080x1920 preview scaled down)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -40,7 +39,6 @@ export default function App() {
     canvas.width = width;
     canvas.height = height;
 
-    // Background
     if (bgType === 'gradient') {
       const grad = ctx.createLinearGradient(0, 0, width, height);
       grad.addColorStop(0, bgColor1);
@@ -54,7 +52,6 @@ export default function App() {
     const centerX = width / 2;
     const centerY = height / 2;
 
-    // Outer aesthetic ring
     if (hasRing) {
       ctx.beginPath();
       ctx.arc(centerX, centerY, 260, 0, Math.PI * 2);
@@ -62,21 +59,18 @@ export default function App() {
       ctx.lineWidth = 10;
       ctx.stroke();
 
-      // Soft outer glow ring
       ctx.beginPath();
       ctx.arc(centerX, centerY, 280, 0, Math.PI * 2);
-      ctx.strokeStyle = ringColor + '33'; // translucent
+      ctx.strokeStyle = ringColor + '33';
       ctx.lineWidth = 4;
       ctx.stroke();
     }
 
-    // Icon draw (Simple SVG path fallback or custom glyph circle)
     ctx.fillStyle = iconColor;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = 'bold 180px sans-serif';
 
-    // Simple symbols mapping for canvas rendering
     const symbols = {
       Sparkles: '✦',
       Heart: '♥',
@@ -135,30 +129,63 @@ export default function App() {
     setTimeout(() => setCopiedBioIndex(null), 2000);
   };
 
-  // --- VIEWER STATES ---
+  // --- VIEWER STATES & LIVE FETCH LOGIC ---
   const [searchUsername, setSearchUsername] = useState('');
   const [searchedUser, setSearchedUser] = useState(null);
   const [viewerLoading, setViewerLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const handleSearch = (e) => {
+  const handleSearch = async (e) => {
     e.preventDefault();
-    if (!searchUsername.trim()) return;
-    setViewerLoading(true);
+    const cleanUser = searchUsername.trim().replace('@', '');
+    if (!cleanUser) return;
 
-    // Mock response demonstration (yahan RapidAPI plug hogi)
-    setTimeout(() => {
-      setSearchedUser({
-        username: searchUsername.replace('@', ''),
-        fullName: 'Demo Public Profile',
-        bio: 'Just another creator exploring possibilities ✨\nLiving the best moments.',
-        followers: '124K',
-        following: '412',
-        posts: '89',
-        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80',
-        hasStories: true
+    setViewerLoading(true);
+    setErrorMessage('');
+    setSearchedUser(null);
+
+    try {
+      // Instagram public endpoint via public proxy
+      const targetUrl = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${cleanUser}`;
+      const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+
+      const res = await fetch(proxyUrl, {
+        headers: {
+          'x-ig-app-id': '936619743392459',
+        }
       });
+
+      if (!res.ok) throw new Error('API server unreachable');
+
+      const proxyData = await res.json();
+      if (!proxyData || !proxyData.contents) {
+        throw new Error('User data nahi mila');
+      }
+
+      const parsedData = JSON.parse(proxyData.contents);
+      const userData = parsedData?.data?.user;
+
+      if (!userData) {
+        throw new Error('Account nahi mila ya yeh private account ho sakta hai.');
+      }
+
+      setSearchedUser({
+        username: userData.username,
+        fullName: userData.full_name || userData.username,
+        bio: userData.biography || 'No bio provided.',
+        followers: Number(userData.edge_followed_by?.count || 0).toLocaleString(),
+        following: Number(userData.edge_follow?.count || 0).toLocaleString(),
+        posts: Number(userData.edge_owner_to_timeline_media?.count || 0).toLocaleString(),
+        avatarUrl: userData.profile_pic_url_hd || userData.profile_pic_url,
+        isPrivate: userData.is_private,
+        externalUrl: userData.external_url
+      });
+    } catch (err) {
+      console.error(err);
+      setErrorMessage('Profile load nahi ho saki. Please check karein handle sahi hai ya account public hai.');
+    } finally {
       setViewerLoading(false);
-    }, 800);
+    }
   };
 
   return (
@@ -202,7 +229,7 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-5xl mx-auto px-4 py-8 flex-1 w-full">
-        {/* ===================== TAB 1: HIGHLIGHT ICON MAKER ===================== */}
+        {/* TAB 1: HIGHLIGHT ICON MAKER */}
         {activeTab === 'highlights' && (
           <div className="space-y-6">
             <div className="text-center max-w-lg mx-auto">
@@ -211,9 +238,7 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-12 gap-8 items-start pt-4">
-              {/* Controls Column */}
               <div className="md:col-span-7 bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-5">
-                {/* Background Selector */}
                 <div>
                   <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block mb-2">Background Style</label>
                   <div className="flex gap-2 mb-3">
@@ -249,7 +274,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Ring & Icon Colors */}
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block mb-2">Icon Color</label>
@@ -285,7 +309,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Icons Grid */}
                 <div>
                   <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block mb-2">Select Aesthetic Icon</label>
                   <div className="grid grid-cols-5 gap-2">
@@ -306,7 +329,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Download Button */}
                 <button
                   onClick={downloadCover}
                   className="w-full bg-rose-600 hover:bg-rose-700 text-white font-medium py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-rose-600/20 transition active:scale-[0.99]"
@@ -315,7 +337,6 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Preview Column */}
               <div className="md:col-span-5 flex flex-col items-center justify-center">
                 <span className="text-xs text-slate-400 font-medium mb-3">Live Story Preview</span>
                 <div className="relative border-4 border-slate-800 rounded-3xl overflow-hidden shadow-2xl bg-black aspect-[9/16] w-[260px]">
@@ -326,7 +347,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ===================== TAB 2: SMART BIO GENERATOR ===================== */}
+        {/* TAB 2: SMART BIO GENERATOR */}
         {activeTab === 'bio' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
@@ -334,7 +355,6 @@ export default function App() {
               <p className="text-slate-400 text-sm mt-1">Ready-made aesthetic, brand, and minimalist bios with 1-click copy.</p>
             </div>
 
-            {/* Category Pills */}
             <div className="flex justify-center flex-wrap gap-2 pt-2">
               {['minimal', 'aesthetic', 'business', 'savage'].map((cat) => (
                 <button
@@ -347,7 +367,6 @@ export default function App() {
               ))}
             </div>
 
-            {/* Bios List */}
             <div className="space-y-4 pt-2">
               {biosData[bioCategory]?.map((bio, index) => (
                 <div key={index} className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 flex items-start justify-between gap-4">
@@ -365,15 +384,14 @@ export default function App() {
           </div>
         )}
 
-        {/* ===================== TAB 3: PUBLIC PROFILE & MEDIA VIEWER ===================== */}
+        {/* TAB 3: PUBLIC PROFILE & MEDIA VIEWER */}
         {activeTab === 'viewer' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Public Profile & Story Viewer</h1>
-              <p className="text-slate-400 text-sm mt-1">Search any public handle to inspect DP, follower count and stories.</p>
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Public Profile Viewer</h1>
+              <p className="text-slate-400 text-sm mt-1">Search any public Instagram handle to view DP, followers, and bio live.</p>
             </div>
 
-            {/* Search Bar */}
             <form onSubmit={handleSearch} className="flex gap-2">
               <div className="relative flex-1">
                 <span className="absolute left-3.5 top-3 text-slate-500 font-bold">@</span>
@@ -395,7 +413,12 @@ export default function App() {
               </button>
             </form>
 
-            {/* Profile Result Card */}
+            {errorMessage && (
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl flex items-center justify-center gap-2">
+                <AlertCircle size={15} /> {errorMessage}
+              </div>
+            )}
+
             {searchedUser && (
               <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-6">
                 <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
@@ -403,26 +426,21 @@ export default function App() {
                     <img
                       src={searchedUser.avatarUrl}
                       alt={searchedUser.username}
+                      referrerPolicy="no-referrer"
                       className="w-24 h-24 rounded-full object-cover border-2 border-rose-500 p-0.5"
                     />
-                    {searchedUser.hasStories && (
-                      <span className="absolute bottom-0 right-0 bg-rose-600 text-[10px] font-bold px-2 py-0.5 rounded-full text-white uppercase tracking-wider">
-                        Story
-                      </span>
-                    )}
                   </div>
 
                   <div className="flex-1 text-center sm:text-left space-y-2">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2">
                       <h2 className="text-xl font-bold text-white">@{searchedUser.username}</h2>
-                      <span className="text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md font-medium self-center sm:self-auto">
-                        Public
+                      <span className={`text-xs px-2 py-0.5 rounded-md font-medium self-center sm:self-auto ${searchedUser.isPrivate ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-slate-800 text-slate-300'}`}>
+                        {searchedUser.isPrivate ? 'Private' : 'Public'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-400 font-medium">{searchedUser.fullName}</p>
                     <pre className="font-sans text-xs text-slate-300 whitespace-pre-line">{searchedUser.bio}</pre>
 
-                    {/* Stats */}
                     <div className="flex justify-center sm:justify-start gap-6 pt-2 text-center">
                       <div>
                         <span className="font-bold text-sm text-white block">{searchedUser.posts}</span>
