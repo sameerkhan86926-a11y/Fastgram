@@ -2,12 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   Instagram, Search, Sparkles, Copy, Check, Download, 
   Camera, Heart, Star, Compass, Music, ShoppingBag, Coffee, Plane, User, Eye, AlertCircle, 
-  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle
+  Film, Layers, History, Volume2, Play, X, ChevronLeft, ChevronRight, MessageCircle, FolderHeart
 } from 'lucide-react';
 
 const API_KEY = '30468bbd66msh09095694867a49bp1bfa9djsn432e9272dd57';
 const API_HOST = 'instagram-public-bulk-scraper.p.rapidapi.com';
 
+// CDN 403 Forbidden hotlink bypass helper
 const safeMedia = (url) => {
   if (!url) return '';
   return `https://wsrv.nl/?url=${encodeURIComponent(url)}&default=404`;
@@ -143,24 +144,34 @@ export default function App() {
     setTimeout(() => setCopiedBioIndex(null), 2000);
   };
 
-  // ==================== 3. ANONYMOUS VIEWER & MODALS ====================
+  // ==================== 3. VIEWER STATES ====================
   const [searchUsername, setSearchUsername] = useState('');
   const [searchedUser, setSearchedUser] = useState(null);
   const [viewerLoading, setViewerLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [viewerTab, setViewerTab] = useState('posts');
 
-  // Carousel Slides Modal
+  // Carousel Modal (Multi-Images)
   const [activeCarousel, setActiveCarousel] = useState(null);
   const [carouselIndex, setCarouselIndex] = useState(0);
 
-  // Highlight Media Modal
-  const [highlightModal, setHighlightModal] = useState({ open: false, title: '', items: [], loading: false });
-
-  // Post Comments Modal
+  // Comments Modal
   const [commentsModal, setCommentsModal] = useState({ open: false, code: '', comments: [], loading: false });
 
-  // ==================== 4. DOWNLOADER & AUDIO TOOLS ====================
+  // ==================== 4. DEDICATED HIGHLIGHTS TAB STATES ====================
+  const [hlInputUser, setHlInputUser] = useState('');
+  const [hlLoading, setHlLoading] = useState(false);
+  const [hlList, setHlList] = useState([]);
+  const [hlError, setHlError] = useState('');
+  const [activeHlMedia, setActiveHlMedia] = useState({ open: false, title: '', items: [], loading: false });
+
+  // ==================== 5. DEDICATED STORIES TAB STATES ====================
+  const [storyInputUser, setStoryInputUser] = useState('');
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyList, setStoryList] = useState([]);
+  const [storyError, setStoryError] = useState('');
+
+  // ==================== 6. DOWNLOADER & AUDIO STATES ====================
   const [mediaUrlInput, setMediaUrlInput] = useState('');
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaResult, setMediaResult] = useState(null);
@@ -171,7 +182,70 @@ export default function App() {
   const [extractedAudio, setExtractedAudio] = useState(null);
   const [audioError, setAudioError] = useState('');
 
-  // Search Handler
+  // ---------------- Story Fetch Engine (Safe Deep Parser) ----------------
+  const fetchStoriesForUser = async (cleanUsername) => {
+    const res = await fetch(
+      `https://${API_HOST}/v1/download_story?username=${cleanUsername}`,
+      { method: 'GET', headers }
+    );
+    if (!res.ok) return [];
+    const storyRaw = await res.json();
+    
+    // Deep fallback extraction for stories
+    const rawItems = 
+      storyRaw?.data?.items || 
+      storyRaw?.data?.stories || 
+      storyRaw?.stories || 
+      storyRaw?.items || 
+      (Array.isArray(storyRaw?.data) ? storyRaw.data : []) || 
+      (Array.isArray(storyRaw) ? storyRaw : []);
+
+    return rawItems.map((s, i) => {
+      const item = s.media || s;
+      const vUrl = item.video_url || item.video_versions?.[0]?.url || (item.is_video ? item.url : '') || '';
+      const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.display_url || item.url || '';
+      const finalUrl = vUrl || iUrl;
+      return {
+        id: item.id || item.pk || `story_${i}`,
+        mediaUrl: finalUrl,
+        thumbnail: iUrl || vUrl,
+        isVideo: Boolean(vUrl || item.is_video),
+        time: item.taken_at ? new Date(item.taken_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Active Story'
+      };
+    }).filter(x => x.mediaUrl);
+  };
+
+  // ---------------- Highlights Fetch Engine ----------------
+  const fetchHighlightsForUser = async (userOrId) => {
+    const res = await fetch(
+      `https://${API_HOST}/v1/user_highlights?username_or_id=${userOrId}`,
+      { method: 'GET', headers }
+    );
+    if (!res.ok) return [];
+    const hlRaw = await res.json();
+    const hlItems = 
+      hlRaw?.data?.tray || 
+      hlRaw?.tray || 
+      hlRaw?.data?.items || 
+      hlRaw?.data || 
+      (Array.isArray(hlRaw) ? hlRaw : []);
+
+    return hlItems.map((hl, i) => {
+      const cover = 
+        hl.cover_media?.cropped_image_version?.url || 
+        hl.cover_media?.image_versions2?.candidates?.[0]?.url ||
+        hl.cover_media_crop_info?.url ||
+        hl.custom_cover_media_url ||
+        '';
+      return {
+        id: hl.id || `hl_${i}`,
+        title: hl.title || 'Highlight',
+        coverUrl: cover,
+      };
+    });
+  };
+
+  // ---------------- 1. Handle Viewer Search ----------------
   const handleSearch = async (e) => {
     e.preventDefault();
     const cleanUser = searchUsername.trim().replace('@', '');
@@ -182,13 +256,13 @@ export default function App() {
     setSearchedUser(null);
 
     try {
-      // 1. Fetch User Info Web
+      // User Info Web
       const userRes = await fetch(
         `https://${API_HOST}/v1/user_info_web?username=${cleanUser}`,
         { method: 'GET', headers }
       );
 
-      if (!userRes.ok) throw new Error('Account nahi mila ya API limit exhaust ho gayi.');
+      if (!userRes.ok) throw new Error('Account nahi mila ya API issue hai.');
       const userRaw = await userRes.json();
       const userDataObj = userRaw?.data?.user || userRaw?.user || userRaw?.data;
 
@@ -196,7 +270,7 @@ export default function App() {
 
       const numericUserId = userDataObj.id || userDataObj.pk;
 
-      // Extract Timeline Posts (With Carousel Support)
+      // Extract Timeline Posts with Multiple Photos
       const timelineEdges = userDataObj.edge_owner_to_timeline_media?.edges || [];
       const parsedPosts = timelineEdges.map((edge, i) => {
         const node = edge.node || edge;
@@ -219,7 +293,7 @@ export default function App() {
         };
       });
 
-      // 2. Fetch Reels (v1/user_reels)
+      // Fetch Reels
       let parsedReels = [];
       try {
         const reelsRes = await fetch(
@@ -241,78 +315,15 @@ export default function App() {
           });
         }
       } catch (err) {
-        console.warn('Reels fetch skipped:', err);
+        console.warn('Reels skipped:', err);
       }
 
-      // 3. Fetch Active Stories (v1/download_story)
+      // Fetch Stories
       let parsedStories = [];
       try {
-        const storyRes = await fetch(
-          `https://${API_HOST}/v1/download_story?username=${cleanUser}`,
-          { method: 'GET', headers }
-        );
-        if (storyRes.ok) {
-          const storyRaw = await storyRes.json();
-          const storyList = 
-            storyRaw?.data?.items || 
-            storyRaw?.data || 
-            storyRaw?.items || 
-            storyRaw?.stories || 
-            (Array.isArray(storyRaw) ? storyRaw : []);
-
-          if (Array.isArray(storyList)) {
-            parsedStories = storyList.map((s, i) => {
-              const item = s.media || s;
-              const vUrl = item.video_url || item.video_versions?.[0]?.url || (item.is_video ? item.url : '') || '';
-              const iUrl = item.image_url || item.image_versions2?.candidates?.[0]?.url || item.display_url || item.url || '';
-              return {
-                id: item.id || item.pk || `story_${i}`,
-                mediaUrl: vUrl || iUrl,
-                isVideo: Boolean(vUrl || item.is_video),
-              };
-            }).filter(item => item.mediaUrl);
-          }
-        }
+        parsedStories = await fetchStoriesForUser(cleanUser);
       } catch (err) {
-        console.warn('Stories fetch skipped:', err);
-      }
-
-      // 4. Fetch User Highlights Tray (v1/user_highlights)
-      let parsedHighlights = [];
-      try {
-        const targetId = numericUserId ? numericUserId : cleanUser;
-        const hlRes = await fetch(
-          `https://${API_HOST}/v1/user_highlights?username_or_id=${targetId}`,
-          { method: 'GET', headers }
-        );
-        if (hlRes.ok) {
-          const hlRaw = await hlRes.json();
-          const hlItems = 
-            hlRaw?.data?.tray || 
-            hlRaw?.tray || 
-            hlRaw?.data?.items || 
-            hlRaw?.data || 
-            (Array.isArray(hlRaw) ? hlRaw : []);
-
-          if (Array.isArray(hlItems)) {
-            parsedHighlights = hlItems.map((hl, i) => {
-              const cover = 
-                hl.cover_media?.cropped_image_version?.url || 
-                hl.cover_media?.image_versions2?.candidates?.[0]?.url ||
-                hl.cover_media_crop_info?.url ||
-                hl.custom_cover_media_url ||
-                '';
-              
-              return {
-                id: hl.id || `hl_${i}`,
-                title: hl.title || 'Highlight',
-                coverUrl: cover,
-              };
-            });
-          }
-        }
-      } catch (err) {
-        console.warn('Highlights fetch skipped:', err);
+        console.warn('Stories skipped:', err);
       }
 
       setSearchedUser({
@@ -327,7 +338,6 @@ export default function App() {
         postsList: parsedPosts,
         reelsList: parsedReels,
         storiesList: parsedStories,
-        highlightsList: parsedHighlights,
       });
 
     } catch (err) {
@@ -338,17 +348,80 @@ export default function App() {
     }
   };
 
-  // Open Highlight Media Modal (v1/highlight_media)
+  // ---------------- 2. Dedicated Stories Search ----------------
+  const handleStorySearch = async (e) => {
+    e.preventDefault();
+    const clean = storyInputUser.trim().replace('@', '');
+    if (!clean) return;
+
+    setStoryLoading(true);
+    setStoryError('');
+    setStoryList([]);
+
+    try {
+      const stories = await fetchStoriesForUser(clean);
+      if (stories.length === 0) {
+        setStoryError('Is user ki koi active story (24 hrs) nahi mili ya account private hai.');
+      } else {
+        setStoryList(stories);
+      }
+    } catch (err) {
+      setStoryError('Story fetch nahi ho saki. Please username check karein.');
+    } finally {
+      setStoryLoading(false);
+    }
+  };
+
+  // ---------------- 3. Dedicated Highlights Search ----------------
+  const handleHighlightSearch = async (e) => {
+    e.preventDefault();
+    const clean = hlInputUser.trim().replace('@', '');
+    if (!clean) return;
+
+    setHlLoading(true);
+    setHlError('');
+    setHlList([]);
+
+    try {
+      // First get numeric user ID if possible
+      let targetId = clean;
+      try {
+        const infoRes = await fetch(`https://${API_HOST}/v1/user_info_web?username=${clean}`, { headers });
+        if (infoRes.ok) {
+          const infoJson = await infoRes.json();
+          const uObj = infoJson?.data?.user || infoJson?.user || infoJson?.data;
+          if (uObj?.id || uObj?.pk) {
+            targetId = uObj.id || uObj.pk;
+          }
+        }
+      } catch (e) {
+        console.warn('ID lookup fallback to username');
+      }
+
+      const highlights = await fetchHighlightsForUser(targetId);
+      if (highlights.length === 0) {
+        setHlError('Is user ki koi highlights nahi mili.');
+      } else {
+        setHlList(highlights);
+      }
+    } catch (err) {
+      setHlError('Highlights fetch fail ho gayi.');
+    } finally {
+      setHlLoading(false);
+    }
+  };
+
+  // ---------------- 4. Open Highlight Stories (v1/highlight_media) ----------------
   const openHighlightMedia = async (highlightId, title) => {
     const cleanId = String(highlightId).replace('highlight:', '');
-    setHighlightModal({ open: true, title, items: [], loading: true });
+    setActiveHlMedia({ open: true, title, items: [], loading: true });
 
     try {
       const res = await fetch(
         `https://${API_HOST}/v1/highlight_media?highlight_id=${cleanId}`,
         { method: 'GET', headers }
       );
-      if (!res.ok) throw new Error('Highlight media fetch nahi ho saki.');
+      if (!res.ok) throw new Error('Highlight media fetch error');
       const data = await res.json();
       
       const items = 
@@ -368,14 +441,14 @@ export default function App() {
         };
       }).filter(item => item.url);
 
-      setHighlightModal({ open: true, title, items: parsedItems, loading: false });
+      setActiveHlMedia({ open: true, title, items: parsedItems, loading: false });
     } catch (err) {
       console.error(err);
-      setHighlightModal({ open: true, title, items: [], loading: false });
+      setActiveHlMedia({ open: true, title, items: [], loading: false });
     }
   };
 
-  // Open Post Comments Modal (v1/media_comments)
+  // ---------------- 5. Open Post Comments (v1/media_comments) ----------------
   const openComments = async (codeOrId) => {
     setCommentsModal({ open: true, code: codeOrId, comments: [], loading: true });
     try {
@@ -392,7 +465,7 @@ export default function App() {
     }
   };
 
-  // Fetch Single Media Info (v2/media_info)
+  // ---------------- 6. Single Media Downloader (v2/media_info) ----------------
   const handleFetchMedia = async (e) => {
     e.preventDefault();
     if (!mediaUrlInput.trim()) return;
@@ -417,16 +490,15 @@ export default function App() {
         isVideo: Boolean(videoUrl),
         mediaUrl: videoUrl || imageUrl,
         caption: media.caption?.text || 'Instagram Post',
-        likes: (media.like_count || 0).toLocaleString(),
       });
     } catch (err) {
-      setMediaError(err.message || 'Media download fetch failed.');
+      setMediaError(err.message || 'Media fetch failed.');
     } finally {
       setMediaLoading(false);
     }
   };
 
-  // Extract Audio from Reel (v1/extract_audio)
+  // ---------------- 7. Reel Audio Extractor (v1/extract_audio) ----------------
   const handleExtractAudio = async (e) => {
     e.preventDefault();
     if (!audioUrlInput.trim()) return;
@@ -475,34 +547,46 @@ export default function App() {
             </div>
           </div>
 
-          <nav className="flex bg-slate-900 p-1 border border-slate-800 rounded-xl text-xs sm:text-sm font-medium">
+          <nav className="flex bg-slate-900 p-1 border border-slate-800 rounded-xl text-xs sm:text-sm font-medium overflow-x-auto">
             <button
               onClick={() => setActiveTab('viewer')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'viewer' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'viewer' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               Profile Viewer
             </button>
             <button
+              onClick={() => setActiveTab('highlights')}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'highlights' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+            >
+              Highlights
+            </button>
+            <button
+              onClick={() => setActiveTab('stories')}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'stories' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+            >
+              Stories
+            </button>
+            <button
               onClick={() => setActiveTab('downloader')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'downloader' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'downloader' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               Downloader
             </button>
             <button
               onClick={() => setActiveTab('audio')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'audio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'audio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               Audio
             </button>
             <button
-              onClick={() => setActiveTab('highlights')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'highlights' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              onClick={() => setActiveTab('covers')}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'covers' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               Covers
             </button>
             <button
               onClick={() => setActiveTab('bio')}
-              className={`px-3 py-1.5 rounded-lg transition ${activeTab === 'bio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
+              className={`px-3 py-1.5 rounded-lg whitespace-nowrap transition ${activeTab === 'bio' ? 'bg-rose-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}
             >
               Bio
             </button>
@@ -512,12 +596,12 @@ export default function App() {
 
       {/* Main Container */}
       <main className="max-w-5xl mx-auto px-4 py-8 flex-1 w-full">
-        {/* ==================== TAB 1: PROFILE VIEWER ==================== */}
+        {/* ==================== 1. PROFILE VIEWER TAB ==================== */}
         {activeTab === 'viewer' && (
           <div className="max-w-3xl mx-auto space-y-6">
             <div className="text-center">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Full Instagram Anonymous Viewer</h1>
-              <p className="text-slate-400 text-sm mt-1">Live profile info, multi-photo carousels, highlights, reels aur stories.</p>
+              <p className="text-slate-400 text-sm mt-1">Live profile info, multi-photo carousels, reels aur stories.</p>
             </div>
 
             <form onSubmit={handleSearch} className="flex gap-2">
@@ -549,7 +633,6 @@ export default function App() {
 
             {searchedUser && (
               <div className="space-y-6">
-                {/* Profile Card */}
                 <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-5">
                   <div className="flex flex-col sm:flex-row items-center sm:items-start gap-5">
                     <div className="relative">
@@ -604,32 +687,6 @@ export default function App() {
                     </a>
                   </div>
                 </div>
-
-                {/* Highlights Tray */}
-                {searchedUser.highlightsList.length > 0 && (
-                  <div className="space-y-2">
-                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Highlights</span>
-                    <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-none">
-                      {searchedUser.highlightsList.map((hl) => (
-                        <button
-                          key={hl.id}
-                          onClick={() => openHighlightMedia(hl.id, hl.title)}
-                          className="flex flex-col items-center gap-1.5 flex-shrink-0 group focus:outline-none"
-                        >
-                          <div className="w-16 h-16 rounded-full border-2 border-rose-500/80 p-0.5 group-hover:border-rose-400 transition">
-                            <img 
-                              src={safeMedia(hl.coverUrl)} 
-                              alt={hl.title} 
-                              referrerPolicy="no-referrer" 
-                              className="w-full h-full rounded-full object-cover" 
-                            />
-                          </div>
-                          <span className="text-[11px] font-medium text-slate-300 truncate max-w-[70px]">{hl.title}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
 
                 {/* Sub-Tabs */}
                 <div className="flex border-b border-slate-800 bg-slate-900/40 p-1.5 rounded-xl justify-between">
@@ -766,7 +823,10 @@ export default function App() {
                 {viewerTab === 'stories' && (
                   <div>
                     {searchedUser.storiesList.length === 0 ? (
-                      <p className="text-center text-xs text-slate-500 py-8">Abhi koi 24h active story live nahi hai.</p>
+                      <div className="text-center py-8 space-y-2">
+                        <p className="text-xs text-slate-400">Abhi is user ki koi active story (24 hrs) live nahi hai.</p>
+                        <p className="text-[11px] text-slate-500">Agar highlights dekhni hain toh upar "Highlights" tab mein check karein.</p>
+                      </div>
                     ) : (
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                         {searchedUser.storiesList.map((story) => (
@@ -796,7 +856,136 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== TAB 2: SINGLE MEDIA DOWNLOADER ==================== */}
+        {/* ==================== 2. DEDICATED HIGHLIGHTS TAB ==================== */}
+        {activeTab === 'highlights' && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div className="text-center">
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Instagram Highlights Viewer</h1>
+              <p className="text-slate-400 text-sm mt-1">Username daalein, saare highlights folder dekhein aur unki stories khol kar download karein.</p>
+            </div>
+
+            <form onSubmit={handleHighlightSearch} className="flex gap-2 max-w-xl mx-auto">
+              <div className="relative flex-1">
+                <span className="absolute left-3.5 top-3 text-slate-500 font-bold">@</span>
+                <input
+                  type="text"
+                  placeholder="enter username (e.g. netflix.kr)"
+                  value={hlInputUser}
+                  onChange={(e) => setHlInputUser(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={hlLoading}
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2 transition disabled:opacity-50"
+              >
+                <FolderHeart size={16} /> {hlLoading ? 'Fetching...' : 'Get Highlights'}
+              </button>
+            </form>
+
+            {hlError && (
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl flex items-center justify-center gap-2 max-w-xl mx-auto">
+                <AlertCircle size={15} /> {hlError}
+              </div>
+            )}
+
+            {hlList.length > 0 && (
+              <div className="space-y-4 pt-4">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Found {hlList.length} Highlights Albums (Click to open)</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-4">
+                  {hlList.map((hl) => (
+                    <button
+                      key={hl.id}
+                      onClick={() => openHighlightMedia(hl.id, hl.title)}
+                      className="bg-slate-900 border border-slate-800 hover:border-rose-500 p-3 rounded-2xl flex flex-col items-center gap-2 transition group text-center"
+                    >
+                      <div className="w-20 h-20 rounded-full border-2 border-rose-500/80 p-0.5 group-hover:scale-105 transition overflow-hidden">
+                        <img 
+                          src={safeMedia(hl.coverUrl)} 
+                          alt={hl.title} 
+                          referrerPolicy="no-referrer" 
+                          className="w-full h-full rounded-full object-cover" 
+                        />
+                      </div>
+                      <span className="text-xs font-bold text-slate-200 group-hover:text-rose-400 truncate w-full">{hl.title}</span>
+                      <span className="text-[10px] text-slate-500 font-medium">Open Album →</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================== 3. DEDICATED STORIES TAB ==================== */}
+        {activeTab === 'stories' && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div className="text-center">
+              <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Instagram Active Stories Downloader</h1>
+              <p className="text-slate-400 text-sm mt-1">24-ghante ki active stories anonymously watch aur download karein bina login ke.</p>
+            </div>
+
+            <form onSubmit={handleStorySearch} className="flex gap-2 max-w-xl mx-auto">
+              <div className="relative flex-1">
+                <span className="absolute left-3.5 top-3 text-slate-500 font-bold">@</span>
+                <input
+                  type="text"
+                  placeholder="enter username (e.g. virat.kohli)"
+                  value={storyInputUser}
+                  onChange={(e) => setStoryInputUser(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-9 pr-4 py-2.5 text-sm focus:outline-none focus:border-rose-500 transition"
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={storyLoading}
+                className="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl font-medium flex items-center gap-2 transition disabled:opacity-50"
+              >
+                <History size={16} /> {storyLoading ? 'Fetching...' : 'Get Stories'}
+              </button>
+            </form>
+
+            {storyError && (
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs rounded-xl flex items-center justify-center gap-2 max-w-xl mx-auto">
+                <AlertCircle size={15} /> {storyError}
+              </div>
+            )}
+
+            {storyList.length > 0 && (
+              <div className="space-y-4 pt-4">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Live Active Stories ({storyList.length})</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  {storyList.map((story) => (
+                    <div key={story.id} className="relative aspect-[9/16] rounded-2xl overflow-hidden border border-slate-800 bg-slate-900 group shadow-lg">
+                      {story.isVideo ? (
+                        <video src={story.mediaUrl} controls playsInline className="w-full h-full object-cover" />
+                      ) : (
+                        <img src={safeMedia(story.mediaUrl)} alt="Story" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                      )}
+                      <span className="absolute top-2 left-2 bg-black/60 text-[10px] text-white px-2 py-0.5 rounded font-semibold backdrop-blur">
+                        {story.time}
+                      </span>
+                      <a 
+                        href={story.mediaUrl} 
+                        target="_blank" 
+                        rel="noreferrer" 
+                        download 
+                        className="absolute bottom-2 right-2 bg-rose-600 hover:bg-rose-700 text-[11px] px-3 py-1.5 font-bold rounded-xl text-white flex items-center gap-1 shadow-lg transition"
+                      >
+                        <Download size={13} /> Save Story
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================== 4. SINGLE MEDIA DOWNLOADER ==================== */}
         {activeTab === 'downloader' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
@@ -854,7 +1043,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== TAB 3: AUDIO EXTRACTOR ==================== */}
+        {/* ==================== 5. AUDIO EXTRACTOR ==================== */}
         {activeTab === 'audio' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
@@ -907,8 +1096,8 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== TAB 4: HIGHLIGHT MAKER ==================== */}
-        {activeTab === 'highlights' && (
+        {/* ==================== 6. HIGHLIGHT COVER MAKER ==================== */}
+        {activeTab === 'covers' && (
           <div className="space-y-6">
             <div className="text-center max-w-lg mx-auto">
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Create Aesthetic Highlight Covers</h1>
@@ -1025,7 +1214,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ==================== TAB 5: BIO GENERATOR ==================== */}
+        {/* ==================== 7. BIO GENERATOR ==================== */}
         {activeTab === 'bio' && (
           <div className="max-w-2xl mx-auto space-y-6">
             <div className="text-center">
@@ -1117,27 +1306,27 @@ export default function App() {
         </div>
       )}
 
-      {/* ==================== MODAL: HIGHLIGHT MEDIA (STORIES) ==================== */}
-      {highlightModal.open && (
+      {/* ==================== MODAL: HIGHLIGHT ALBUM STORIES ==================== */}
+      {activeHlMedia.open && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="relative max-w-xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-4 max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="font-bold text-white text-sm">Highlight: {highlightModal.title}</h3>
+              <h3 className="font-bold text-white text-sm">Highlight Album: {activeHlMedia.title}</h3>
               <button 
-                onClick={() => setHighlightModal({ open: false, title: '', items: [], loading: false })}
+                onClick={() => setActiveHlMedia({ open: false, title: '', items: [], loading: false })}
                 className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-full text-slate-300"
               >
                 <X size={16} />
               </button>
             </div>
 
-            {highlightModal.loading ? (
+            {activeHlMedia.loading ? (
               <p className="text-center text-xs text-slate-400 py-10">Fetching highlight stories...</p>
-            ) : highlightModal.items.length === 0 ? (
+            ) : activeHlMedia.items.length === 0 ? (
               <p className="text-center text-xs text-slate-500 py-10">Koi media stories nahi mili.</p>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1">
-                {highlightModal.items.map((item) => (
+                {activeHlMedia.items.map((item) => (
                   <div key={item.id} className="relative aspect-[9/16] rounded-xl overflow-hidden bg-black border border-slate-800 group">
                     {item.isVideo ? (
                       <video src={item.url} controls playsInline className="w-full h-full object-cover" />
